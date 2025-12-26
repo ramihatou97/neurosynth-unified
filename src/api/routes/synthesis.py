@@ -230,7 +230,7 @@ async def generate_synthesis(request: SynthesisRequest):
         
         # Stage 1: Retrieval using existing SearchService
         # SearchResult ALREADY has all fields needed - no enrichment step!
-        search_response = await container.search_service.search(
+        search_response = await container.search.search(
             query=request.topic,
             mode="hybrid",
             top_k=request.max_chunks,
