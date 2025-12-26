@@ -31,6 +31,7 @@ from src.api.routes import (
     health_router,
     synthesis_router
 )
+from src.api.routes.images import router as images_router
 
 # Configure logging
 logging.basicConfig(
@@ -114,10 +115,10 @@ Currently open access. Production deployments should add authentication.
     # CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure for production
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization"],
     )
     
     # Register routes
@@ -126,6 +127,7 @@ Currently open access. Production deployments should add authentication.
     app.include_router(rag_router, prefix="/api/v1")
     app.include_router(documents_router, prefix="/api/v1")
     app.include_router(synthesis_router)
+    app.include_router(images_router)  # Image serving with security
     
     # Exception handlers
     @app.exception_handler(RequestValidationError)

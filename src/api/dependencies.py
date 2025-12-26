@@ -52,6 +52,17 @@ class Settings:
     rate_limit_requests: int = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 
+    @property
+    def cors_origins(self) -> list[str]:
+        """
+        Get CORS origins from environment variable.
+
+        Returns:
+            List of allowed origins. Defaults to ["*"] for development.
+        """
+        origins_str = os.getenv("CORS_ORIGINS", "*")
+        return [origin.strip() for origin in origins_str.split(",")]
+
 
 @lru_cache()
 def get_settings() -> Settings:

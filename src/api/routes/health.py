@@ -236,3 +236,33 @@ async def get_info(
             "llm": settings.claude_model
         }
     }
+
+
+# =============================================================================
+# Metadata
+# =============================================================================
+
+@router.get(
+    "/metadata",
+    summary="Get metadata options",
+    description="Get available filter options for UI (chunk types, specialties, image types)"
+)
+async def get_metadata():
+    """
+    Get metadata for UI filters.
+
+    Returns available options for:
+    - chunk_types: All valid ChunkType enum values
+    - specialties: All neurosurgery specialties from chunker
+    - image_types: All valid ImageType enum values
+
+    This ensures frontend filter options stay synchronized with backend.
+    """
+    from src.shared.models import ChunkType, ImageType
+    from src.core.neuro_chunker import EXPANDED_CATEGORY_SPECIALTY_MAP
+
+    return {
+        "chunk_types": [ct.value for ct in ChunkType],
+        "specialties": sorted(set(EXPANDED_CATEGORY_SPECIALTY_MAP.values())),
+        "image_types": [it.value for it in ImageType]
+    }

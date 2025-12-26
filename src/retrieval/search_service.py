@@ -339,50 +339,52 @@ class SearchService:
         if not ids:
             return []
         
-        # Build query with filters
-        conditions = ["id = ANY($1)"]
+        # Build query with filters (using table aliases for JOIN)
+        conditions = ["c.id = ANY($1)"]
         params = [ids]
         param_idx = 2
-        
+
         if filters.document_ids:
-            conditions.append(f"document_id = ANY(${param_idx})")
+            conditions.append(f"c.document_id = ANY(${param_idx})")
             params.append([UUID(d) for d in filters.document_ids])
             param_idx += 1
-        
+
         if filters.chunk_types:
-            conditions.append(f"chunk_type = ANY(${param_idx})")
+            conditions.append(f"c.chunk_type = ANY(${param_idx})")
             params.append(filters.chunk_types)
             param_idx += 1
-        
+
         if filters.specialties:
-            conditions.append(f"specialty = ANY(${param_idx})")
+            # specialty_relevance is JSONB in your schema
+            conditions.append(f"c.specialty_relevance ? ${param_idx}")
             params.append(filters.specialties)
             param_idx += 1
-        
+
         if filters.cuis:
-            conditions.append(f"cuis && ${param_idx}")
+            # topic_tags is your equivalent of cuis
+            conditions.append(f"c.topic_tags && ${param_idx}")
             params.append(filters.cuis)
             param_idx += 1
-        
+
         if filters.page_range:
-            conditions.append(f"page_number >= ${param_idx} AND page_number <= ${param_idx + 1}")
+            conditions.append(f"c.start_page >= ${param_idx} AND c.start_page <= ${param_idx + 1}")
             params.extend(filters.page_range)
             param_idx += 2
-        
+
         where_clause = " AND ".join(conditions)
 
-        # FIXED: JOIN documents table for authority_score and document_title
-        # SELECT metadata for entity_names extraction
+        # ADAPTED: Query using actual database schema column names
+        # Your schema: start_page, topic_tags, entity_mentions, specialty_relevance
         query = f"""
             SELECT
                 c.id,
                 c.document_id,
                 c.content,
-                c.page_number,
+                c.start_page AS page_number,
                 c.chunk_type,
-                c.specialty,
-                c.cuis,
-                c.metadata,
+                c.topic_tags AS cuis,
+                c.entity_mentions,
+                c.specialty_relevance,
                 d.title AS document_title,
                 COALESCE(d.authority_score, 1.0) AS authority_score
             FROM chunks c
@@ -395,7 +397,14 @@ class SearchService:
         results = []
         for row in rows:
             row_id = str(row['id'])
-            metadata = row.get('metadata', {}) or {}
+            # Extract entity names from entity_mentions JSONB
+            entity_mentions = row.get('entity_mentions', {}) or {}
+            entity_names = []
+            if isinstance(entity_mentions, dict):
+                # Extract entity text values from JSONB structure
+                entity_names = list(entity_mentions.keys()) if entity_mentions else []
+            elif isinstance(entity_mentions, list):
+                entity_names = [str(e) for e in entity_mentions]
 
             # Parse chunk_type string to ChunkType enum
             chunk_type = ChunkType.GENERAL
@@ -406,23 +415,23 @@ class SearchService:
                     # If conversion fails, default to GENERAL
                     pass
 
-            # FIXED: Populate synthesis-compatible SearchResult
+            # ADAPTED: Populate SearchResult using actual schema fields
             results.append(SearchResult(
-                chunk_id=row_id,  # FIXED: chunk_id not id
+                chunk_id=row_id,
                 document_id=str(row['document_id']),
                 content=row['content'],
-                title=metadata.get('title', ''),  # Section title from metadata
-                chunk_type=chunk_type,  # FIXED: Enum not string
-                page_start=row.get('page_number', 0),  # FIXED: page_start not page_number
-                entity_names=metadata.get('entity_names', []),  # FIXED: From metadata
-                image_ids=metadata.get('image_ids', []),
-                cuis=row.get('cuis', []),  # FIXED: Add cuis parameter
-                authority_score=float(row['authority_score']),  # FIXED: From JOIN
-                keyword_score=0.0,  # TODO: Implement BM25 scoring
-                semantic_score=0.0,  # Will be set from FAISS scores
-                final_score=0.0,  # Will be computed from weighted scores
-                document_title=row.get('document_title'),  # FIXED: From JOIN
-                images=[]  # Will be populated by _attach_linked_images()
+                title='',  # No title in current schema
+                chunk_type=chunk_type,
+                page_start=row.get('page_number', 0),  # Aliased from start_page
+                entity_names=entity_names,  # Extracted from entity_mentions JSONB
+                image_ids=[],  # Not stored in chunks table
+                cuis=row.get('cuis', []) or [],  # Aliased from topic_tags
+                authority_score=float(row['authority_score']),
+                keyword_score=0.0,
+                semantic_score=0.0,  # Set from FAISS scores later
+                final_score=0.0,  # Computed from weighted scores
+                document_title=row.get('document_title'),
+                images=[]  # Populated by _attach_linked_images()
             ))
 
         return results
@@ -552,26 +561,25 @@ class SearchService:
         if not chunk_ids:
             return results
 
-        # FIXED: Fetch more image fields for ExtractedImage construction
+        # ADAPTED: Query using actual schema column names
+        # Your schema: storage_path, relevance_score (not score)
         query = """
             SELECT
                 l.chunk_id,
-                l.score AS link_score,
+                l.relevance_score AS link_score,
                 i.id,
                 i.document_id,
-                i.file_path,
-                i.page_number,
-                i.vlm_caption AS caption,
-                i.vlm_caption,
+                i.storage_path AS file_path,
+                i.caption,
+                i.caption AS vlm_caption,
                 i.image_type,
                 i.width,
                 i.height,
-                i.format,
-                i.content_hash
-            FROM links l
+                i.format
+            FROM chunk_image_links l
             JOIN images i ON l.image_id = i.id
-            WHERE l.chunk_id = ANY($1) AND l.score >= 0.5
-            ORDER BY l.chunk_id, l.score DESC
+            WHERE l.chunk_id = ANY($1) AND l.relevance_score >= 0.5
+            ORDER BY l.chunk_id, l.relevance_score DESC
         """
 
         rows = await self.db.fetch(query, chunk_ids)
@@ -583,20 +591,21 @@ class SearchService:
             if chunk_id not in images_by_chunk:
                 images_by_chunk[chunk_id] = []
 
-            # FIXED: Create ExtractedImage objects (not Dict)
+            # ADAPTED: Create ExtractedImage with available fields
             img_obj = ExtractedImage(
                 id=str(row['id']),
                 document_id=str(row['document_id']),
-                file_path=row['file_path'],
-                page_number=row.get('page_number', 0),
+                file_path=Path(row['file_path']),  # Aliased from storage_path
+                page_number=0,  # page_id is UUID, not page number
                 width=row.get('width', 0),
                 height=row.get('height', 0),
                 format=row.get('format', 'JPEG'),
-                content_hash=row.get('content_hash', ''),
+                content_hash='',  # Not in schema
                 caption=row.get('caption', ''),
                 vlm_caption=row.get('vlm_caption', ''),
                 image_type=row.get('image_type', 'unknown'),
-                # Store link score in metadata for potential later use
+                quality_score=row.get('quality_score', 0.0),
+                # Store link score in metadata
                 metadata={"link_score": float(row['link_score'])}
             )
 
