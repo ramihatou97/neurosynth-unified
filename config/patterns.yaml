@@ -1,0 +1,1883 @@
+# NeuroSynth v2.0 - Entity Patterns Configuration
+# ================================================
+# 
+# This file allows non-engineers to update entity patterns
+# without modifying code. Edit patterns here and restart
+# the service (or call extractor.reload_patterns()).
+#
+# Pattern format: Standard Python regex (escape backslashes)
+# 
+# To add a new pattern:
+#   1. Find the appropriate category
+#   2. Add the regex pattern as a new list item
+#   3. Test with sample text before deploying
+#
+# To add a new normalization:
+#   1. Add to the normalizations section
+#   2. Key = abbreviated form (uppercase)
+#   3. Value = full standardized term
+
+patterns:
+  # =================================================================
+  # VASCULAR NEUROSURGERY
+  # =================================================================
+  
+  ANATOMY_VASCULAR_ARTERIAL:
+    # ICA segments (C1-C7)
+    - "\\b(C[1-7])\\s*(segment)?\\b"
+    # Circle of Willis segments (A1-A4, M1-M4, P1-P4)
+    - "\\b(A|M|P)[1-4]\\s*(segment)?\\b"
+    # Named arteries (abbreviated)
+    - "\\b(ICA|MCA|ACA|PCA|SCA|AICA|PICA|VA|BA)\\b"
+    # Communicating arteries
+    - "\\b(anterior|posterior)\\s+communicating\\s+artery\\b"
+    - "\\b(ACoA|AComA|ACOM|PCoA|PComA|PCOM)\\b"
+    # Ophthalmic and choroidal
+    - "\\b(ophthalmic|anterior\\s+choroidal|posterior\\s+choroidal)\\s+artery\\b"
+    # Perforators
+    - "\\b(lenticulostriate|thalamoperforat|heubner|recurrent\\s+artery)\\b"
+    # Full names
+    - "\\b(internal\\s+carotid|middle\\s+cerebral|anterior\\s+cerebral)\\s+artery\\b"
+    - "\\b(posterior\\s+cerebral|superior\\s+cerebellar)\\s+artery\\b"
+    - "\\b(vertebral|basilar)\\s+artery\\b"
+
+  ANATOMY_VASCULAR_VENOUS:
+    # Major sinuses
+    - "\\b(SSS|ISS|TS|SS)\\b"
+    - "\\b(superior\\s+sagittal|inferior\\s+sagittal)\\s+sinus\\b"
+    - "\\b(transverse|sigmoid|cavernous|petrosal|straight)\\s+sinus\\b"
+    - "\\b(torcula|confluence\\s+of\\s+sinuses?)\\b"
+    # Named veins
+    - "\\b(vein\\s+of\\s+(?:Galen|Labbé|Labbe|Trolard|Rosenthal))\\b"
+    - "\\b(basal\\s+vein|internal\\s+cerebral\\s+vein)\\b"
+
+  PATHOLOGY_VASCULAR:
+    # Aneurysms
+    - "\\b(aneurysm|aneurysmal)\\b"
+    - "\\b(saccular|fusiform|dissecting|mycotic|traumatic)\\s+aneurysm\\b"
+    # AVMs
+    - "\\b(AVM|arteriovenous\\s+malformation)\\b"
+    - "\\b(dural\\s+AV\\s*fistula|dAVF|DAVF)\\b"
+    - "\\b(cavernoma|cavernous\\s+malformation|CCM)\\b"
+    # Hemorrhage
+    - "\\b(subarachnoid\\s+hemorrhage|SAH)\\b"
+    - "\\b(intracerebral\\s+hemorrhage|ICH)\\b"
+    - "\\b(vasospasm|DCI|delayed\\s+cerebral\\s+ischemia)\\b"
+
+  # =================================================================
+  # SKULL BASE & CRANIAL NERVES
+  # =================================================================
+  
+  ANATOMY_SKULL_BASE:
+    - "\\b(planum\\s+sphenoidale|tuberculum\\s+sellae|dorsum\\s+sellae)\\b"
+    - "\\b(crista\\s+galli|cribriform\\s+plate|olfactory\\s+groove)\\b"
+    - "\\b(sella\\s+turcica|pituitary\\s+fossa)\\b"
+    - "\\b(clivus|petrous\\s+apex)\\b"
+    - "\\b(cerebellopontine\\s+angle|CPA)\\b"
+    - "\\b(foramen\\s+(?:ovale|rotundum|spinosum|lacerum|magnum))\\b"
+
+  ANATOMY_CRANIAL_NERVES:
+    - "\\b(CN\\s*[IVX]+)\\b"
+    - "\\b(cranial\\s+nerve\\s*[IVX]+)\\b"
+    - "\\b(olfactory|optic|oculomotor|trochlear|trigeminal)\\s+nerve\\b"
+    - "\\b(abducens|facial|vestibulocochlear)\\s+nerve\\b"
+    - "\\b(glossopharyngeal|vagus|accessory|hypoglossal)\\s+nerve\\b"
+    - "\\b(gasserian\\s+ganglion|trigeminal\\s+ganglion)\\b"
+
+  # =================================================================
+  # SPINE
+  # =================================================================
+  
+  ANATOMY_SPINE_BONE:
+    # Vertebral levels (context-dependent disambiguation)
+    - "\\b(C|T|L|S)[1-8]\\b(?!\\s*segment)"
+    - "\\b(C|T|L)[1-8][-–](C|T|L|S)[1-8]\\b"
+    - "\\b(atlas|axis|dens|odontoid)\\b"
+    - "\\b(pedicle|lamina|facet|pars\\s+interarticularis)\\b"
+    - "\\b(cervical|thoracic|lumbar|sacral)\\s+spine\\b"
+
+  ANATOMY_SPINE_NEURAL:
+    - "\\b(spinal\\s+cord)\\b"
+    - "\\b(conus\\s+medullaris|cauda\\s+equina|filum\\s+terminale)\\b"
+    - "\\b(nerve\\s+root|dorsal\\s+root\\s+ganglion|DRG)\\b"
+    - "\\b(ligamentum\\s+flavum)\\b"
+
+  # =================================================================
+  # TUMOR
+  # =================================================================
+  
+  PATHOLOGY_TUMOR:
+    - "\\b(glioma|glioblastoma|GBM)\\b"
+    - "\\b(astrocytoma|oligodendroglioma|ependymoma)\\b"
+    - "\\b(meningioma)\\b"
+    - "\\b(schwannoma|vestibular\\s+schwannoma|acoustic\\s+neuroma)\\b"
+    - "\\b(pituitary\\s+adenoma|macroadenoma|microadenoma)\\b"
+    - "\\b(craniopharyngioma)\\b"
+    - "\\b(metastasis|metastases|metastatic)\\b"
+    - "\\b(WHO\\s+grade\\s+[IVX]+)\\b"
+
+  # =================================================================
+  # SURGICAL PROCEDURES
+  # =================================================================
+  
+  PROCEDURE_APPROACH:
+    - "\\b(pterional|frontotemporal)\\b"
+    - "\\b(orbitozygomatic|OZ)\\b"
+    - "\\b(suboccipital|retrosigmoid)\\b"
+    - "\\b(transsphenoidal|endoscopic\\s+endonasal)\\b"
+    - "\\b(ACDF|anterior\\s+cervical\\s+discectomy)\\b"
+    - "\\b(PLIF|TLIF|ALIF|XLIF|OLIF)\\b"
+
+  PROCEDURE_ACTION:
+    - "\\b(craniotomy|craniectomy|cranioplasty)\\b"
+    - "\\b(resection|debulking|biopsy)\\b"
+    - "\\b(gross\\s+total\\s+resection|GTR)\\b"
+    - "\\b(clipping|clip\\s+application)\\b"
+    - "\\b(coiling|embolization)\\b"
+    - "\\b(discectomy|laminectomy|foraminotomy)\\b"
+    - "\\b(fusion|arthrodesis)\\b"
+
+  # =================================================================
+  # INSTRUMENTS
+  # =================================================================
+  
+  INSTRUMENT:
+    - "\\b(bipolar|monopolar)\\s*(forceps|coagulation)?\\b"
+    - "\\b(CUSA|cavitron|ultrasonic\\s+aspirator)\\b"
+    - "\\b(aneurysm\\s+clip|yasargil\\s+clip|sugita\\s+clip)\\b"
+    - "\\b(pedicle\\s+screw|rod|cage|plate)\\b"
+    - "\\b(microscope|endoscope|neuroendoscope)\\b"
+    - "\\b(neuronavigation|stereotactic\\s+frame)\\b"
+
+  # =================================================================
+  # MEASUREMENTS & SCALES
+  # =================================================================
+
+  MEASUREMENT:
+    - "\\b(Spetzler[-\\s]?Martin|SM\\s+grade)\\b"
+    - "\\b(Hunt[-\\s]?Hess|H[-]?H\\s+grade)\\b"
+    - "\\b(Fisher\\s+grade|modified\\s+Fisher)\\b"
+    - "\\b(WFNS\\s+grade)\\b"
+    - "\\b(Karnofsky|KPS)\\b"
+    - "\\b(mRS|modified\\s+Rankin)\\b"
+    - "\\b(GCS|Glasgow\\s+Coma\\s+Scale?)\\b"
+
+  # =================================================================
+  # IMAGING
+  # =================================================================
+
+  IMAGING:
+    - "\\b(MRI|MR\\s+imaging|magnetic\\s+resonance)\\b"
+    - "\\b(CT|computed\\s+tomography)\\b"
+    - "\\b(CTA|CT\\s+angiography)\\b"
+    - "\\b(MRA|MR\\s+angiography)\\b"
+    - "\\b(DSA|digital\\s+subtraction\\s+angiography)\\b"
+    - "\\b(T1[-\\s]?weighted|T2[-\\s]?weighted|FLAIR)\\b"
+    - "\\b(diffusion[-\\s]?weighted|DWI|ADC)\\b"
+    - "\\b(contrast[-\\s]?enhanced|gadolinium)\\b"
+    - "\\b(X[-]?ray|fluoroscopy)\\b"
+    - "\\b(PET|positron\\s+emission)\\b"
+
+  # =================================================================
+  # DEVICE/TECHNOLOGY & MEASUREMENTS (NEW)
+  # Critical gap identified in testing - captures devices, instruments, parameters
+  # =================================================================
+
+  DEVICE_TECHNOLOGY:
+    # Stereotactic & Navigation Systems
+    - "\\b(Leksell|Cosman-Roberts-Wells|CRW|BRW)\\b"
+    - "\\b(Stealth|StealthStation|Medtronic Navigation)\\b"
+    - "\\b(BrainLab|Brainlab|VarioGuide)\\b"
+    - "\\b(ROSA|Neuromate|Renaissance)\\b"
+    - "\\b(Mazor|ExcelsiusGPS|Globus)\\b"
+    - "\\b(O-?arm|Airo|Loop-?X)\\b"
+    # Radiosurgery Platforms
+    - "\\b(Gamma\\s*Knife|Leksell Gamma Knife|Perfexion|Icon)\\b"
+    - "\\b(CyberKnife|Accuray)\\b"
+    - "\\b(ZAP-?X|Zap Surgical)\\b"
+    - "\\b(TrueBeam|Edge|Novalis)\\b"
+    - "\\b(TomoTherapy|Tomotherapy)\\b"
+    - "\\b(ViewRay|MRIdian)\\b"
+    # Laser Ablation Systems
+    - "\\b(Visualase|Medtronic Visualase)\\b"
+    - "\\b(NeuroBlate|Monteris)\\b"
+    - "\\b(AutoLITT|Laser Ablation)\\b"
+    # Neuromodulation Devices
+    - "\\b(Medtronic DBS|Activa|Percept)\\b"
+    - "\\b(Boston Scientific|Vercise)\\b"
+    - "\\b(Abbott|St\\.?\\s*Jude|Infinity)\\b"
+    - "\\b(NeuroPace|RNS)\\b"
+    - "\\b(Nevro|Senza)\\b"
+    - "\\b(SynchroMed|Prometra|Flowonix)\\b"
+    # Endovascular Devices
+    - "\\b(Pipeline|Pipeline Flex|PED)\\b"
+    - "\\b(Surpass|Surpass Evolve|Streamline)\\b"
+    - "\\b(FRED|Flow Re-direction)\\b"
+    - "\\b(WEB|WEB SL|WEB SLS|WEB 17)\\b"
+    - "\\b(Penumbra|ACE|JET|3D Revascularization)\\b"
+    - "\\b(Solitaire|Trevo|Embotrap|EmboTrap)\\b"
+    - "\\b(Sofia|AXS Catalyst|React)\\b"
+    - "\\b(Onyx|Squid|Phil)\\b"
+    - "\\b(Neuroform|Enterprise|LVIS|Atlas)\\b"
+    - "\\b(Woven EndoBridge)\\b"
+    # Shunt Systems
+    - "\\b(Codman|Hakim|Certas)\\b"
+    - "\\b(Medtronic (CSF|shunt|Strata))\\b"
+    - "\\b(Integra|OSV|Orbis-Sigma)\\b"
+    - "\\b(proGAV|Miethke)\\b"
+    - "\\b(Sophysa|Polaris)\\b"
+    # Ultrasonic Aspirators
+    - "\\b(CUSA|Cavitron)\\b"
+    - "\\b(Sonopet|Söring)\\b"
+    - "\\b(Integra CUSA)\\b"
+    # Surgical Microscopes
+    - "\\b(Zeiss|Pentero|Kinevo)\\b"
+    - "\\b(Leica|M530|ARveo)\\b"
+    # Monitoring Equipment
+    - "\\b(Cadwell|Cascade)\\b"
+    - "\\b(Natus|Nicolet|XLTEK)\\b"
+    - "\\b(Inomed|ISIS)\\b"
+    - "\\b(NIM|Medtronic NIM)\\b"
+    # Cranial Fixation
+    - "\\b(Mayfield|DORO|Sugita)\\b"
+    - "\\b(3-pin|three-?pin|skull clamp)\\b"
+    # Imaging/Fluorescence
+    - "\\b(5-?ALA|Gleolan|fluorescein)\\b"
+    - "\\b(ICG|indocyanine green)\\b"
+    - "\\b(YELLOW 560|BLUE 400)\\b"
+    - "\\b(iMRI|intraoperative MRI)\\b"
+    - "\\b(iCT|intraoperative CT)\\b"
+    # Implants & Hardware
+    - "\\b(Synthes|DePuy)\\b"
+    - "\\b(Stryker|Spine)\\b"
+    - "\\b(NuVasive|Globus Medical)\\b"
+    - "\\b(Zimmer Biomet)\\b"
+    - "\\b(K2M|Alphatec)\\b"
+    - "\\b(pedicle screw|rod|plate|cage)\\s*(system)?\\b"
+    - "\\b(titanium|PEEK|cobalt.?chrome)\\s*(implant|cage|rod)?\\b"
+
+  MEASUREMENT_PARAMETER:
+    # Distance/Length
+    - "\\b(\\d+\\.?\\d*)\\s*(mm|cm|m)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(millimeter|centimeter|meter)s?\\b"
+    # Angles
+    - "\\b(\\d+\\.?\\d*)\\s*(°|degree|degrees)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*deg\\b"
+    # Volume
+    - "\\b(\\d+\\.?\\d*)\\s*(mL|ml|cc|L|cm3|mm3)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(milliliter|liter)s?\\b"
+    # Pressure
+    - "\\b(\\d+\\.?\\d*)\\s*(mmHg|cmH2O|cm\\s*H2O)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(torr|Pa|kPa)\\b"
+    # Temperature
+    - "\\b(\\d+\\.?\\d*)\\s*(°C|°F|degrees?\\s*(C|F|Celsius|Fahrenheit))\\b"
+    # Power/Energy
+    - "\\b(\\d+\\.?\\d*)\\s*(W|Watt|Watts|mW)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(J|Joule|Joules|mJ)\\b"
+    # Frequency
+    - "\\b(\\d+\\.?\\d*)\\s*(Hz|kHz|MHz)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(hertz|kilohertz)\\b"
+    # Current/Voltage
+    - "\\b(\\d+\\.?\\d*)\\s*(mA|μA|A|ampere)s?\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(V|mV|volt)s?\\b"
+    # Time/Duration
+    - "\\b(\\d+\\.?\\d*)\\s*(ms|msec|millisecond)s?\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(sec|second|s|min|minute|hr|hour)s?\\b"
+    # Radiation Dose
+    - "\\b(\\d+\\.?\\d*)\\s*(Gy|cGy|Gray)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(Sv|mSv|rad)\\b"
+    # Wavelength
+    - "\\b(\\d+\\.?\\d*)\\s*(nm|μm|nanometer)s?\\b"
+    # Concentration/Percentage
+    - "\\b(\\d+\\.?\\d*)\\s*(%|percent)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(mg|μg|mcg|g|kg)\\s*(/|per)\\s*(mL|L|kg|dL)?\\b"
+    # Flow Rate
+    - "\\b(\\d+\\.?\\d*)\\s*(mL/hr|mL/min|L/min)\\b"
+    # Common Surgical Measurements
+    - "\\b(\\d+\\.?\\d*)\\s*cm\\s*(from|posterior|anterior|medial|lateral|superior|inferior)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*mm\\s*(diameter|width|length|depth|margin)\\b"
+    # Specific Technical Parameters
+    - "\\b(margin dose|prescription dose)\\s*(\\d+\\.?\\d*)\\s*Gy\\b"
+    - "\\b(thermal (threshold|damage))\\s*(\\d+\\.?\\d*)\\s*°?C\\b"
+    - "\\b(wavelength)\\s*(\\d+\\.?\\d*)\\s*nm\\b"
+    - "\\b(power|wattage)\\s*(\\d+\\.?\\d*)\\s*W\\b"
+    - "\\b(frequency)\\s*(\\d+\\.?\\d*)\\s*Hz\\b"
+    - "\\b(pulse width)\\s*(\\d+\\.?\\d*)\\s*(μs|ms)\\b"
+    - "\\b(impedance)\\s*(\\d+\\.?\\d*)\\s*(Ω|ohm)s?\\b"
+
+  SURGICAL_SPECIFICATION:
+    # Resection Margins
+    - "\\b(resect(ion)?|remove|excise)\\s*(\\d+\\.?\\d*)\\s*(mm|cm)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(mm|cm)\\s*(margin|resection|from)\\b"
+    - "\\b(en bloc|gross total|subtotal|near.?total)\\s*(resection|removal)\\b"
+    # Bone Work
+    - "\\b(craniotomy|craniectomy)\\s*(\\d+\\.?\\d*)\\s*(x\\s*\\d+\\.?\\d*)?\\s*(cm|mm)?\\b"
+    - "\\b(burr hole)\\s*(\\d+\\.?\\d*)?\\s*(mm)?\\b"
+    - "\\b(bone flap)\\s*(\\d+\\.?\\d*)\\s*(x\\s*\\d+\\.?\\d*)?\\s*(cm)?\\b"
+    # Retraction
+    - "\\b(retract(ion)?|retractor)\\s*(\\d+\\.?\\d*)?\\s*(mm|cm)?\\b"
+    - "\\b(brain retraction)\\s*(pressure)?\\s*(\\d+\\.?\\d*)?\\s*(mmHg)?\\b"
+    # Clips & Coils
+    - "\\b(clip|aneurysm clip)\\s*(size)?\\s*(\\d+\\.?\\d*)?\\s*(mm)?\\b"
+    - "\\b(coil)\\s*(size|diameter)?\\s*(\\d+\\.?\\d*)?\\s*(mm|cm)?\\b"
+    - "\\b(packing density)\\s*(\\d+\\.?\\d*)?\\s*%?\\b"
+    # Stereotactic Coordinates
+    - "\\b(X|Y|Z)\\s*[:=]?\\s*[+-]?\\s*(\\d+\\.?\\d*)\\s*(mm)?\\b"
+    - "\\b(AC-?PC|MCP)\\s*(coordinates?|line|plane)\\b"
+    - "\\b(target)\\s*(coordinates?)?\\s*[:=]?\\s*[+-]?\\d+\\.?\\d*\\b"
+    # Angles & Trajectories
+    - "\\b(trajectory|approach)\\s*(angle)?\\s*(\\d+\\.?\\d*)?\\s*(°|degrees?)?\\b"
+    - "\\b(azimuth|elevation|arc|ring)\\s*(\\d+\\.?\\d*)\\s*(°|degrees?)?\\b"
+    # Depth
+    - "\\b(depth)\\s*(\\d+\\.?\\d*)\\s*(mm|cm)\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*(mm|cm)\\s*(deep|depth|below)\\b"
+    # Flow/Pressure Parameters
+    - "\\b(ICP)\\s*(target|goal|threshold)?\\s*[<>]?\\s*(\\d+\\.?\\d*)\\s*(mmHg)?\\b"
+    - "\\b(CPP)\\s*(target|goal|threshold)?\\s*[<>]?\\s*(\\d+\\.?\\d*)\\s*(mmHg)?\\b"
+    - "\\b(MAP)\\s*(target|goal)?\\s*[<>]?\\s*(\\d+\\.?\\d*)\\s*(mmHg)?\\b"
+    # Temperature Targets
+    - "\\b(temperature|temp)\\s*(target|goal|threshold)?\\s*[<>]?\\s*(\\d+\\.?\\d*)\\s*(°?C)?\\b"
+    - "\\b(hypothermia|normothermia)\\s*(\\d+\\.?\\d*)?\\s*(°?C)?\\b"
+
+  # =================================================================
+  # PERIPHERAL NERVE ANATOMY & PATHOLOGY (NEW)
+  # =================================================================
+
+  ANATOMY_PERIPHERAL_UPPER:
+    # Brachial Plexus
+    - "\\b(brachial plexus|BP)\\b"
+    - "\\b(upper trunk|middle trunk|lower trunk)\\b"
+    - "\\b(lateral cord|medial cord|posterior cord)\\b"
+    - "\\b(C[5-8]|T1)\\s*(root|nerve root)\\b"
+    # Major Upper Extremity Nerves
+    - "\\b(median nerve|ulnar nerve|radial nerve)\\b"
+    - "\\b(musculocutaneous nerve|axillary nerve)\\b"
+    - "\\b(long thoracic nerve|suprascapular nerve)\\b"
+    - "\\b(thoracodorsal nerve|subscapular nerve)\\b"
+    # Branches
+    - "\\b(anterior interosseous|AIN)\\b"
+    - "\\b(posterior interosseous|PIN)\\b"
+    - "\\b(superficial (branch of )?radial)\\b"
+    - "\\b(palmar cutaneous|dorsal cutaneous)\\b"
+    - "\\b(digital nerve|proper digital)\\b"
+    # Anatomic Sites
+    - "\\b(carpal tunnel)\\b"
+    - "\\b(cubital tunnel)\\b"
+    - "\\b(Guyon.?s canal|ulnar tunnel)\\b"
+    - "\\b(arcade of Frohse|supinator)\\b"
+    - "\\b(ligament of Struthers)\\b"
+    - "\\b(spiral groove|radial groove)\\b"
+    - "\\b(intermuscular septum)\\b"
+
+  ANATOMY_PERIPHERAL_LOWER:
+    # Lumbosacral Plexus
+    - "\\b(lumbar plexus|sacral plexus)\\b"
+    - "\\b(lumbosacral (trunk|plexus))\\b"
+    - "\\b(L[2-5]|S[1-3])\\s*(root|nerve root)\\b"
+    # Major Lower Extremity Nerves
+    - "\\b(sciatic nerve)\\b"
+    - "\\b(femoral nerve)\\b"
+    - "\\b(obturator nerve)\\b"
+    - "\\b(tibial nerve)\\b"
+    - "\\b((common |)peroneal nerve|fibular nerve)\\b"
+    - "\\b(superficial peroneal|deep peroneal)\\b"
+    - "\\b(sural nerve)\\b"
+    # Branches
+    - "\\b(lateral femoral cutaneous|LFCN)\\b"
+    - "\\b(saphenous nerve)\\b"
+    - "\\b(medial plantar|lateral plantar)\\b"
+    - "\\b(calcaneal nerve)\\b"
+    - "\\b(interdigital nerve)\\b"
+    - "\\b(pudendal nerve)\\b"
+    - "\\b(superior gluteal|inferior gluteal)\\b"
+    # Anatomic Sites
+    - "\\b(tarsal tunnel)\\b"
+    - "\\b(piriformis (muscle|syndrome))\\b"
+    - "\\b(fibular (head|neck|tunnel))\\b"
+    - "\\b(adductor canal|Hunter.?s canal)\\b"
+    - "\\b(popliteal fossa)\\b"
+    - "\\b(sciatic notch)\\b"
+
+  PATHOLOGY_PERIPHERAL:
+    # Injury Classification
+    - "\\b(Seddon|Sunderland)\\s*(class|grade|type|classification)?\\s*([IV]+|\\d)?\\b"
+    - "\\b(neurapraxia|axonotmesis|neurotmesis)\\b"
+    - "\\b(nerve (injury|laceration|transection|avulsion))\\b"
+    - "\\b(stretch injury|traction injury)\\b"
+    - "\\b(compression (injury|neuropathy))\\b"
+    # Specific Conditions
+    - "\\b(neuroma|stump neuroma|neuroma-in-continuity)\\b"
+    - "\\b(nerve (entrapment|compression))\\b"
+    - "\\b(thoracic outlet syndrome|TOS)\\b"
+    - "\\b(neurogenic TOS|vascular TOS)\\b"
+    - "\\b(double crush (syndrome)?)\\b"
+    - "\\b(Saturday night palsy|honeymoon palsy)\\b"
+    - "\\b(meralgia paresthetica)\\b"
+    - "\\b(Morton.?s neuroma)\\b"
+    # Plexopathies
+    - "\\b(brachial plexopathy|plexitis)\\b"
+    - "\\b(Parsonage.?Turner|neuralgic amyotrophy)\\b"
+    - "\\b(Erb.?s? palsy|Erb.?Duchenne)\\b"
+    - "\\b(Klumpke.?s? palsy)\\b"
+    - "\\b(obstetric brachial plexus|OBPI|OBPL)\\b"
+    - "\\b(lumbosacral plexopathy)\\b"
+    # Surgical Terms
+    - "\\b(nerve (repair|graft|transfer))\\b"
+    - "\\b(cable graft|interpositional graft)\\b"
+    - "\\b(neurolysis|external neurolysis|internal neurolysis)\\b"
+    - "\\b(nerve (coaptation|anastomosis))\\b"
+    - "\\b(fascicular repair|grouped fascicular)\\b"
+    - "\\b(Tinel.?s sign|advancing Tinel)\\b"
+    - "\\b(Phalen.?s (test|sign|maneuver))\\b"
+    # Regeneration
+    - "\\b(Wallerian degeneration)\\b"
+    - "\\b(nerve regeneration|axonal regeneration)\\b"
+    - "\\b(regenerating unit|Büngner band)\\b"
+
+  # =================================================================
+  # RADIOSURGERY & RADIATION ONCOLOGY (NEW)
+  # =================================================================
+
+  PROCEDURE_RADIOSURGERY:
+    # Platforms
+    - "\\b(Gamma\\s*[Kk]nife|GK|GKRS)\\b"
+    - "\\b(CyberKnife|Cyber\\s*Knife)\\b"
+    - "\\b(LINAC|linear accelerator)\\s*(radiosurgery|SRS)?\\b"
+    - "\\b(ZAP.?X|Zap)\\b"
+    - "\\b(Leksell)\\b"
+    # Procedure Types
+    - "\\b(SRS|stereotactic radiosurgery)\\b"
+    - "\\b(SBRT|stereotactic body)\\b"
+    - "\\b(single.?fraction|multi.?fraction)\\b"
+    - "\\b(hypofractionat(ed|ion))\\b"
+    - "\\b(fractionated stereotactic)\\b"
+    # Dosimetry
+    - "\\b(margin dose|prescription dose|peripheral dose)\\b"
+    - "\\b(isodose (line|curve))\\s*\\d*%?\\b"
+    - "\\b(dose (rate|falloff|gradient))\\b"
+    - "\\b(conformity index|CI)\\b"
+    - "\\b(Paddick (conformity|gradient))\\b"
+    - "\\b(selectivity index)\\b"
+    - "\\b(gradient index|GI)\\b"
+    - "\\b(homogeneity index|HI)\\b"
+    - "\\b(V12|V10)\\s*Gy?\\b"
+    - "\\b(\\d+\\.?\\d*)\\s*Gy\\b"
+    - "\\b(cGy|centigray)\\b"
+    # Planning
+    - "\\b(treatment (plan|planning))\\b"
+    - "\\b(shot (placement|configuration))\\b"
+    - "\\b(collimator|helmet)\\b"
+    - "\\b(isocenters?)\\b"
+    - "\\b(skull frame|Leksell frame)\\b"
+    - "\\b(frameless|frame-based)\\b"
+    - "\\b(fiducial|tracking)\\b"
+
+  PROCEDURE_RADIATION:
+    # Techniques
+    - "\\b(IMRT|intensity.?modulated)\\b"
+    - "\\b(VMAT|volumetric.?modulated)\\b"
+    - "\\b(3D.?CRT|conformal (radiation|therapy))\\b"
+    - "\\b(proton (therapy|beam|radiation))\\b"
+    - "\\b(carbon ion|particle therapy)\\b"
+    - "\\b(BNCT|boron neutron capture)\\b"
+    # Whole Brain
+    - "\\b(whole brain (radiation|RT|radiotherapy)|WBRT)\\b"
+    - "\\b(hippocampal (avoidance|sparing)|HA-WBRT)\\b"
+    - "\\b(prophylactic cranial irradiation|PCI)\\b"
+    # Spinal
+    - "\\b(craniospinal (irradiation|radiation)|CSI)\\b"
+    - "\\b(spinal (RT|radiation|radiotherapy))\\b"
+    # Brachytherapy
+    - "\\b(brachytherapy)\\b"
+    - "\\b(GliaSite|interstitial)\\b"
+    - "\\b(I-?125|Iodine.?125)\\b"
+    - "\\b(Cs-?131|Cesium.?131)\\b"
+    # Complications
+    - "\\b(radiation necrosis|radionecrosis)\\b"
+    - "\\b(pseudoprogression)\\b"
+    - "\\b(radiation.?induced (myelopathy|plexopathy|edema))\\b"
+    - "\\b(SMART syndrome)\\b"
+    - "\\b(radiation (tolerance|dose limits))\\b"
+
+  # =================================================================
+  # ENDOVASCULAR NEUROSURGERY (NEW)
+  # =================================================================
+
+  PROCEDURE_ENDOVASCULAR:
+    # Aneurysm Treatment
+    - "\\b(coil(ing)?|coil embolization)\\b"
+    - "\\b(bare (platinum |)coil|bioactive coil)\\b"
+    - "\\b(detachable coil|GDC)\\b"
+    - "\\b(flow divert(er|ing|sion)|FD)\\b"
+    - "\\b(Pipeline (embolization|device|flex)|PED)\\b"
+    - "\\b(Surpass (Evolve|Streamline)?)\\b"
+    - "\\b(FRED|Flow Re-direction)\\b"
+    - "\\b(Silk|Derivo)\\b"
+    - "\\b(intrasaccular (device|flow disruption))\\b"
+    - "\\b(WEB (device|17|SL|SLS))\\b"
+    - "\\b(Contour|Luna)\\b"
+    - "\\b(balloon.?(assisted|remodeling))\\b"
+    - "\\b(stent.?assisted (coiling|embolization))\\b"
+    - "\\b(Neuroform|Enterprise|LVIS|Atlas)\\b"
+    # Thrombectomy
+    - "\\b((mechanical )?thrombectomy)\\b"
+    - "\\b(stent.?retriever|stentriever)\\b"
+    - "\\b(Solitaire|Trevo|Embotrap|EmboTrap)\\b"
+    - "\\b(aspiration (catheter|thrombectomy))\\b"
+    - "\\b(ADAPT|direct aspiration)\\b"
+    - "\\b(Penumbra (system|ACE|JET)?)\\b"
+    - "\\b(Sofia|AXS Catalyst|React)\\b"
+    - "\\b(combined (approach|technique)|Solumbra)\\b"
+    - "\\b(SAVE technique)\\b"
+    # AVM/dAVF Treatment
+    - "\\b(Onyx|Squid)\\b"
+    - "\\b(NBCA|n-?butyl cyanoacrylate|glue)\\b"
+    - "\\b(PVA (particles)?|polyvinyl alcohol)\\b"
+    - "\\b(Embosphere|microspheres)\\b"
+    - "\\b(transarterial embolization|TAE)\\b"
+    - "\\b(transvenous embolization|TVE)\\b"
+    - "\\b(nidus (embolization|penetration))\\b"
+    # Carotid/Vertebral
+    - "\\b(carotid (stent|stenting|angioplasty)|CAS)\\b"
+    - "\\b(vertebral (stent|stenting|angioplasty))\\b"
+    - "\\b(subclavian (stent|intervention))\\b"
+    - "\\b(embolic protection device|EPD)\\b"
+    - "\\b(balloon test occlusion|BTO)\\b"
+    - "\\b(parent vessel occlusion|PVO)\\b"
+    # Access & Equipment
+    - "\\b(microcatheter|microwire)\\b"
+    - "\\b(guide catheter|guiding catheter)\\b"
+    - "\\b(intermediate catheter|distal access)\\b"
+    - "\\b(femoral (access|approach)|transfemoral)\\b"
+    - "\\b(radial (access|approach)|transradial)\\b"
+    - "\\b(triaxial|biaxial)\\s*(system|setup)?\\b"
+    - "\\b(roadmap|working projection)\\b"
+    - "\\b(rotational angiography|3D angiography)\\b"
+
+  SCORE_ENDOVASCULAR:
+    # Reperfusion Scores
+    - "\\b(TICI|mTICI|eTICI)\\s*(score|grade)?\\s*([0-3][ab]?)\\b"
+    - "\\b(TICI\\s*[0-3][ab]?)\\b"
+    - "\\b(AOL|arterial occlusive lesion)\\s*(score)?\\s*[0-3]?\\b"
+    - "\\b(complete reperfusion|successful reperfusion)\\b"
+    - "\\b(first.?pass (effect|success)|FPE)\\b"
+    # Stroke Scores
+    - "\\b(ASPECTS)\\s*(score)?\\s*\\d*\\b"
+    - "\\b(pc-?ASPECTS)\\b"
+    - "\\b(NIHSS)\\s*(score)?\\s*\\d*\\b"
+    # Aneurysm Outcomes
+    - "\\b(Raymond.?Roy|Raymond)\\s*(class|grade)?\\s*([I]+|\\d)?\\b"
+    - "\\b(neck remnant|residual (aneurysm|filling))\\b"
+    - "\\b(complete occlusion|near.?complete)\\b"
+    - "\\b(recanalization|recurrence)\\b"
+    - "\\b(O.?Kelly.?Marotta|OKM)\\b"
+    # Complications
+    - "\\b(procedural complication|thromboembolic)\\b"
+    - "\\b(vessel perforation|dissection)\\b"
+    - "\\b(contrast (extravasation|staining))\\b"
+    - "\\b(ENT|embolization to new territory)\\b"
+
+  # =================================================================
+  # PAIN NEUROSURGERY (NEW)
+  # =================================================================
+
+  PATHOLOGY_PAIN:
+    # Cranial Neuralgias
+    - "\\b(trigeminal neuralgia|TN|tic douloureux)\\b"
+    - "\\b(TN (type [12]|classical|secondary))\\b"
+    - "\\b(glossopharyngeal neuralgia|GPN)\\b"
+    - "\\b(geniculate neuralgia|nervus intermedius)\\b"
+    - "\\b(occipital neuralgia)\\b"
+    - "\\b(post.?herpetic neuralgia|PHN)\\b"
+    - "\\b(anesthesia dolorosa)\\b"
+    # Headache Disorders (Surgical)
+    - "\\b(cluster headache|CH)\\b"
+    - "\\b(SUNCT|SUNA)\\b"
+    - "\\b(chronic (cluster|migraine))\\b"
+    - "\\b(medication.?overuse headache|MOH)\\b"
+    - "\\b(refractory headache)\\b"
+    # Neuropathic Pain
+    - "\\b(neuropathic pain)\\b"
+    - "\\b(central (pain|post.?stroke pain))\\b"
+    - "\\b(deafferentation pain)\\b"
+    - "\\b(phantom (limb |)pain)\\b"
+    - "\\b(brachial plexus avulsion pain)\\b"
+    # Complex Regional Pain
+    - "\\b(CRPS|complex regional pain)\\b"
+    - "\\b(CRPS (type [12]|I|II))\\b"
+    - "\\b(RSD|reflex sympathetic dystrophy)\\b"
+    - "\\b(causalgia)\\b"
+    - "\\b(allodynia|hyperalgesia)\\b"
+    # Spinal Pain
+    - "\\b(failed back (surgery )?syndrome|FBSS)\\b"
+    - "\\b(post.?laminectomy syndrome)\\b"
+    - "\\b(arachnoiditis)\\b"
+    - "\\b(discogenic pain)\\b"
+    - "\\b(facet (syndrome|mediated pain))\\b"
+    - "\\b(sacroiliac (joint |)(pain|dysfunction)|SIJ)\\b"
+    # Cancer Pain
+    - "\\b(cancer pain|malignant pain)\\b"
+    - "\\b(intractable (pain|cancer pain))\\b"
+    - "\\b(Pancoast (tumor|syndrome) pain)\\b"
+
+  PROCEDURE_PAIN:
+    # Microvascular Decompression
+    - "\\b(MVD|microvascular decompression)\\b"
+    - "\\b(Janetta (procedure)?)\\b"
+    - "\\b(vascular (compression|loop|contact))\\b"
+    - "\\b(Teflon (felt|pledget|interposition))\\b"
+    # Ablative Procedures - Trigeminal
+    - "\\b(percutaneous rhizotomy)\\b"
+    - "\\b(glycerol (rhizolysis|rhizotomy|injection))\\b"
+    - "\\b(radiofrequency (rhizotomy|ablation|lesioning)|RF)\\b"
+    - "\\b(balloon (compression|microcompression))\\b"
+    - "\\b(Gasserian ganglion)\\b"
+    - "\\b(foramen ovale (cannulation|puncture))\\b"
+    # Ablative Procedures - Spinal
+    - "\\b(cordotomy|percutaneous cordotomy)\\b"
+    - "\\b(DREZ|dorsal root entry zone)\\b"
+    - "\\b(DREZotomy|DREZ lesion)\\b"
+    - "\\b(myelotomy|midline myelotomy)\\b"
+    - "\\b(rhizotomy|dorsal rhizotomy)\\b"
+    - "\\b(SDR|selective dorsal rhizotomy)\\b"
+    - "\\b(sympathectomy)\\b"
+    # Neuromodulation - Spinal
+    - "\\b(SCS|spinal cord stimulat(or|ion))\\b"
+    - "\\b(dorsal column stimulat(or|ion))\\b"
+    - "\\b(DRG stimulat(or|ion)|dorsal root ganglion stim)\\b"
+    - "\\b(paddle (lead|electrode))\\b"
+    - "\\b(percutaneous (lead|electrode))\\b"
+    - "\\b(burst (stimulation|SCS))\\b"
+    - "\\b(high.?frequency (stimulation|SCS)|HF10)\\b"
+    - "\\b(tonic stimulation)\\b"
+    - "\\b(closed.?loop (stimulation|SCS))\\b"
+    # Neuromodulation - Intracranial
+    - "\\b(motor cortex stimulation|MCS)\\b"
+    - "\\b(DBS for pain)\\b"
+    - "\\b(PVG|periventricular gray)\\b"
+    - "\\b(PAG|periaqueductal gray)\\b"
+    - "\\b(VPL|VPM) (stimulation|DBS)\\b"
+    # Intrathecal
+    - "\\b(intrathecal (pump|drug delivery)|IDDS)\\b"
+    - "\\b(baclofen pump|ITB)\\b"
+    - "\\b(intrathecal (morphine|ziconotide|opioid))\\b"
+    - "\\b(SynchroMed|Prometra|Medstream)\\b"
+    - "\\b(pump (refill|revision|replacement))\\b"
+    - "\\b(catheter (tip|granuloma|migration))\\b"
+    # Injections & Blocks
+    - "\\b(nerve block|diagnostic block)\\b"
+    - "\\b(epidural (steroid |)injection|ESI)\\b"
+    - "\\b(facet (injection|block|denervation))\\b"
+    - "\\b(medial branch block|MBB)\\b"
+    - "\\b(SI joint injection)\\b"
+    - "\\b(stellate ganglion block)\\b"
+    - "\\b(celiac plexus block)\\b"
+    - "\\b(hypogastric plexus block)\\b"
+
+  # =================================================================
+  # TUMOR MOLECULAR & CLASSIFICATION (NEW)
+  # =================================================================
+
+  PATHOLOGY_TUMOR_MOLECULAR:
+    # IDH Status
+    - "\\b(IDH[12]?)\\s*[\\-\\s]?(mut(ant|ation)?|wt|wildtype|wild.?type)\\b"
+    - "\\b(IDH (status|testing))\\b"
+    - "\\b(R132H|IDH1.R132H)\\b"
+    # 1p/19q
+    - "\\b(1p[\\/]?19q)\\s*(co-?delet(ed|ion)?|intact|loss)?\\b"
+    - "\\b(1p (deletion|loss))\\b"
+    - "\\b(19q (deletion|loss))\\b"
+    # MGMT
+    - "\\b(MGMT)\\s*(promoter)?\\s*(methyl(ated|ation)?|unmethyl(ated|ation)?|status)?\\b"
+    - "\\b(O6-?methylguanine)\\b"
+    # Histone Mutations
+    - "\\b(H3K27M|H3\\.3K27M)\\b"
+    - "\\b(H3G34R|H3G34V|H3\\.3G34)\\b"
+    - "\\b(histone (mutation|mutant))\\b"
+    - "\\b(K27M.?mutant)\\b"
+    # BRAF
+    - "\\b(BRAF)\\s*[\\-\\s]?(V600E|fusion|mut(ant|ation)?|wildtype)?\\b"
+    - "\\b(KIAA1549.?BRAF)\\b"
+    # Other Markers
+    - "\\b(TERT)\\s*(promoter)?\\s*(mut(ant|ation)?|wildtype)?\\b"
+    - "\\b(ATRX)\\s*(loss|retained|mut(ant|ation)?)?\\b"
+    - "\\b(TP53)\\s*(mut(ant|ation)?|wildtype)?\\b"
+    - "\\b(EGFR)\\s*(amplif(ied|ication)?|vIII|mut(ant|ation)?)?\\b"
+    - "\\b(EGFRvIII)\\b"
+    - "\\b(PTEN)\\s*(loss|deletion|mut(ant|ation)?)?\\b"
+    - "\\b(CDKN2A[\\/]?B?)\\s*(deletion|loss|homozygous)?\\b"
+    - "\\b(NF2)\\s*(mut(ant|ation)?|loss)?\\b"
+    - "\\b(SMARCB1|INI1)\\s*(loss|retained)?\\b"
+    - "\\b(SHH|WNT|Group [34])(\\s*subgroup)?\\b"
+    - "\\b(MYC|MYCN)\\s*(amplif(ied|ication)?)?\\b"
+    # Proliferation
+    - "\\b(Ki[\\s\\-]?67)\\s*(index|labeling)?\\s*\\d*%?\\b"
+    - "\\b(MIB[\\s\\-]?1)\\s*(index)?\\s*\\d*%?\\b"
+    - "\\b(mitotic (index|count|rate))\\b"
+    # WHO Classification
+    - "\\b(WHO)\\s*(grade|Grade)\\s*([IV]+|\\d)\\b"
+    - "\\b(CNS WHO)\\s*(20(16|21))?\\b"
+    - "\\b(grade [IV]+|Grade [IV]+)\\b"
+    - "\\b(low.?grade|high.?grade)\\s*(glioma)?\\b"
+    - "\\b(CNS tumor (type|classification))\\b"
+
+  PATHOLOGY_TUMOR_CLASSIFICATION:
+    # Gliomas - Diffuse
+    - "\\b(astrocytoma|diffuse astrocytoma)\\b"
+    - "\\b(anaplastic astrocytoma|AA)\\b"
+    - "\\b(gliosarcoma)\\b"
+    - "\\b(oligodendroglioma|oligo)\\b"
+    - "\\b(anaplastic oligodendroglioma|AO)\\b"
+    - "\\b(oligoastrocytoma)\\b"
+    - "\\b(diffuse midline glioma|DMG)\\b"
+    - "\\b(gliomatosis cerebri)\\b"
+    # Gliomas - Circumscribed
+    - "\\b(pilocytic astrocytoma|JPA)\\b"
+    - "\\b(pilomyxoid astrocytoma|PMA)\\b"
+    - "\\b(pleomorphic xanthoastrocytoma|PXA)\\b"
+    - "\\b(subependymal giant cell|SEGA)\\b"
+    - "\\b(ganglioglioma|gangliocytoma)\\b"
+    - "\\b(dysembryoplastic neuroepithelial|DNET|DNT)\\b"
+    # Ependymal
+    - "\\b(ependymoma)\\b"
+    - "\\b(anaplastic ependymoma)\\b"
+    - "\\b(subependymoma)\\b"
+    - "\\b(myxopapillary ependymoma)\\b"
+    - "\\b(RELA.?fusion|ZFTA.?fusion)\\b"
+    # Embryonal
+    - "\\b(medulloblastoma|MB)\\b"
+    - "\\b(ATRT|atypical teratoid rhabdoid)\\b"
+    - "\\b(PNET|primitive neuroectodermal)\\b"
+    - "\\b(pineoblastoma)\\b"
+    - "\\b(embryonal tumor)\\b"
+    - "\\b(ETMR|embryonal tumor with multilayered)\\b"
+    # Meningeal
+    - "\\b(atypical meningioma)\\b"
+    - "\\b(anaplastic meningioma|malignant meningioma)\\b"
+    - "\\b(meningothelial|fibrous|transitional)\\s*meningioma\\b"
+    - "\\b(hemangiopericytoma|solitary fibrous tumor|SFT)\\b"
+    - "\\b(hemangioblastoma|HB)\\b"
+    # Nerve Sheath
+    - "\\b(neurinoma|neurilemoma)\\b"
+    - "\\b(neurofibroma)\\b"
+    - "\\b(MPNST|malignant peripheral nerve sheath)\\b"
+    # Sellar
+    - "\\b(functioning adenoma|non.?functioning adenoma|NFPA)\\b"
+    - "\\b(prolactinoma|PRL adenoma)\\b"
+    - "\\b(GH adenoma|acromegaly)\\b"
+    - "\\b(ACTH adenoma|Cushing)\\b"
+    - "\\b(adamantinomatous|papillary)\\s*craniopharyngioma\\b"
+    - "\\b(Rathke.?s cleft cyst|RCC)\\b"
+    - "\\b(pituicytoma)\\b"
+    # Pineal
+    - "\\b(pineal (tumor|region tumor))\\b"
+    - "\\b(pineocytoma)\\b"
+    - "\\b(pineal parenchymal tumor)\\b"
+    - "\\b(germinoma)\\b"
+    - "\\b(teratoma|germ cell tumor)\\b"
+    - "\\b(choriocarcinoma|yolk sac tumor)\\b"
+    # Skull Base
+    - "\\b(chordoma)\\b"
+    - "\\b(chondrosarcoma)\\b"
+    - "\\b(glomus (tumor|jugulare|tympanicum))\\b"
+    - "\\b(paraganglioma)\\b"
+    - "\\b(esthesioneuroblastoma|olfactory neuroblastoma)\\b"
+    # Metastatic
+    - "\\b(brain (metastasis|metastases|met|mets))\\b"
+    - "\\b(metastatic (tumor|disease|lesion))\\b"
+    - "\\b(leptomeningeal (metastasis|carcinomatosis|disease))\\b"
+    - "\\b(dural metastasis)\\b"
+    # Lymphoma
+    - "\\b(PCNSL|primary CNS lymphoma)\\b"
+    - "\\b(CNS lymphoma)\\b"
+    - "\\b(intravascular lymphoma)\\b"
+
+  # =================================================================
+  # SPINE DEFORMITY & BIOMECHANICS (NEW)
+  # =================================================================
+
+  PATHOLOGY_SPINE_DEFORMITY:
+    # Deformity Types
+    - "\\b(scoliosis)\\b"
+    - "\\b(degenerative scoliosis|de novo scoliosis)\\b"
+    - "\\b(adolescent idiopathic scoliosis|AIS)\\b"
+    - "\\b(congenital scoliosis)\\b"
+    - "\\b(neuromuscular scoliosis)\\b"
+    - "\\b(kyphosis)\\b"
+    - "\\b(Scheuermann.?s (kyphosis|disease))\\b"
+    - "\\b(lordosis|hyperlordosis|hypolordosis)\\b"
+    - "\\b(kyphoscoliosis)\\b"
+    - "\\b(flat back (syndrome|deformity))\\b"
+    - "\\b(sagittal imbalance|coronal imbalance)\\b"
+    # Sagittal Parameters
+    - "\\b(Cobb angle)\\s*\\d*°?\\b"
+    - "\\b(SVA|sagittal vertical axis)\\s*\\d*\\s*(mm|cm)?\\b"
+    - "\\b(C7 plumb(line)?)\\b"
+    - "\\b(T1 (slope|pelvic angle)|T1PA|TPA)\\b"
+    - "\\b(thoracic kyphosis|TK)\\s*\\d*°?\\b"
+    - "\\b(lumbar lordosis|LL)\\s*\\d*°?\\b"
+    - "\\b(cervical lordosis|CL)\\s*\\d*°?\\b"
+    # Pelvic Parameters
+    - "\\b(pelvic incidence|PI)\\s*\\d*°?\\b"
+    - "\\b(pelvic tilt|PT)\\s*\\d*°?\\b"
+    - "\\b(sacral slope|SS)\\s*\\d*°?\\b"
+    - "\\b(PI[\\s\\-]LL|PI.?LL mismatch)\\s*\\d*°?\\b"
+    - "\\b(spinopelvic (parameters|alignment|harmony))\\b"
+    # Coronal Parameters
+    - "\\b(coronal (balance|vertical axis)|CVA)\\b"
+    - "\\b(coronal Cobb)\\b"
+    - "\\b(Lenke (classification|type))\\s*\\d*[ABC]?\\b"
+    # Junctional Issues
+    - "\\b(proximal junctional (kyphosis|failure)|PJK|PJF)\\b"
+    - "\\b(distal junctional (kyphosis|failure)|DJK|DJF)\\b"
+    - "\\b(junctional (stress|degeneration))\\b"
+    - "\\b(adding.?on|curve progression)\\b"
+    # Surgical Considerations
+    - "\\b(3.?column osteotomy|3CO)\\b"
+    - "\\b(pedicle subtraction osteotomy|PSO)\\b"
+    - "\\b(Smith.?Petersen osteotomy|SPO)\\b"
+    - "\\b(vertebral column resection|VCR)\\b"
+    - "\\b(anterior column realignment|ACR)\\b"
+    - "\\b(posterior column osteotomy|PCO)\\b"
+
+  SPINE_BIOMECHANICS:
+    # Biomechanical Concepts
+    - "\\b(motion segment|functional spinal unit|FSU)\\b"
+    - "\\b(instantaneous axis of rotation|IAR)\\b"
+    - "\\b(neutral zone|elastic zone)\\b"
+    - "\\b(load (sharing|bearing))\\b"
+    - "\\b(anterior column|middle column|posterior column)\\b"
+    - "\\b(Denis (column|classification|three.?column))\\b"
+    - "\\b(tension band|compression|distraction)\\b"
+    - "\\b(translation|rotation|angulation)\\b"
+    # Stability Assessment
+    - "\\b(spinal (stability|instability))\\b"
+    - "\\b(TLICS|thoracolumbar injury classification)\\s*(score)?\\s*\\d*\\b"
+    - "\\b(SLIC|subaxial cervical)\\s*(score)?\\s*\\d*\\b"
+    - "\\b(AO\\s*Spine)\\s*(classification)?\\b"
+    - "\\b(PLC|posterior ligamentous complex)\\s*(intact|injured|disrupted)?\\b"
+    - "\\b(mechanically (stable|unstable))\\b"
+    # Material Properties
+    - "\\b(bone (mineral )?density|BMD)\\b"
+    - "\\b(T.?score)\\s*[\\-]?\\d*\\.?\\d*\\b"
+    - "\\b(osteoporosis|osteopenia)\\b"
+    - "\\b(vertebral (compression )?fracture|VCF)\\b"
+    - "\\b(pathologic fracture)\\b"
+    - "\\b(insufficiency fracture)\\b"
+    # Instrumentation Biomechanics
+    - "\\b(construct (length|stiffness))\\b"
+    - "\\b(rod (diameter|contour|material))\\b"
+    - "\\b(screw (pullout|purchase|trajectory))\\b"
+    - "\\b(cantilever|in.?situ bending)\\b"
+    - "\\b(cement augmentation|PMMA)\\b"
+    - "\\b(interbody (cage|spacer|device))\\b"
+    - "\\b(cage (subsidence|migration))\\b"
+    - "\\b(pseudarthrosis|nonunion)\\b"
+
+  # =================================================================
+  # VASCULAR MALFORMATIONS (NEW)
+  # =================================================================
+
+  PATHOLOGY_AVM:
+    # AVM General
+    - "\\b(brain AVM|cerebral AVM|intracranial AVM)\\b"
+    - "\\b(spinal AVM|spinal cord AVM)\\b"
+    - "\\b(dural AVM)\\b"
+    # Angioarchitecture
+    - "\\b(nidus)\\s*(\\d+\\s*(mm|cm))?\\b"
+    - "\\b(feeding arter(y|ies)|arterial feeder)\\b"
+    - "\\b(draining vein|venous drainage)\\b"
+    - "\\b(deep (venous )?drainage)\\b"
+    - "\\b(superficial (venous )?drainage)\\b"
+    - "\\b(en passage|flow.?related)\\b"
+    - "\\b(intranidal aneurysm|flow.?related aneurysm)\\b"
+    - "\\b(venous (ectasia|varix|stenosis))\\b"
+    - "\\b(pial|perimedullary)\\b"
+    # Grading
+    - "\\b(Spetzler[\\s\\-]?Ponce)\\b"
+    - "\\b(supplementary (grade|grading))\\b"
+    - "\\b(eloquen(t|ce)|eloquent (cortex|brain))\\b"
+    - "\\b(non.?eloquent)\\b"
+    # Risk & Presentation
+    - "\\b((AVM |)hemorrhage|AVM rupture)\\b"
+    - "\\b(hemorrhage risk|annual (rupture|hemorrhage) risk)\\b"
+    - "\\b(ARUBA)\\b"
+    - "\\b(steal (phenomenon|syndrome))\\b"
+    - "\\b(normal perfusion pressure breakthrough|NPPB)\\b"
+    - "\\b(occlusive hyperemia)\\b"
+    # Treatment
+    - "\\b(AVM (resection|excision|removal))\\b"
+    - "\\b((staged |)embolization)\\b"
+    - "\\b((AVM |)radiosurgery)\\b"
+    - "\\b(multimodal(ity)? treatment)\\b"
+    - "\\b(obliteration|cure)\\b"
+    - "\\b(partial treatment|subtotal)\\b"
+
+  PATHOLOGY_VASCULAR_OTHER:
+    # Cavernous Malformation
+    - "\\b(cavernoma|cavernous malformation|CCM)\\b"
+    - "\\b(cavernous (hemangioma|angioma))\\b"
+    - "\\b(familial (cavernoma|CCM))\\b"
+    - "\\b(CCM[123])\\b"
+    - "\\b(brainstem cavernoma)\\b"
+    - "\\b(developmental venous anomaly|DVA)\\b"
+    - "\\b(venous (angioma|malformation))\\b"
+    - "\\b(mixed (malformation|lesion))\\b"
+    # Capillary Telangiectasia
+    - "\\b(capillary telangiectasia)\\b"
+    - "\\b(occult vascular malformation)\\b"
+    # Dural Fistula
+    - "\\b(dAVF|dural (arteriovenous |AV )?fistula)\\b"
+    - "\\b(DAVF|dural AVF)\\b"
+    - "\\b(Borden|Cognard)\\s*(type|grade|class)?\\s*([IV]+|\\d)?\\b"
+    - "\\b(cortical venous (drainage|reflux)|CVD)\\b"
+    - "\\b(sinus (thrombosis|occlusion) (associated|related))\\b"
+    - "\\b(carotid.?cavernous fistula|CCF)\\b"
+    - "\\b(direct CCF|indirect CCF|dural CCF)\\b"
+    - "\\b(Barrow (type|classification))\\s*[A-D]?\\b"
+    - "\\b(transverse.?sigmoid|tentorial|marginal)\\s*(dAVF|fistula)?\\b"
+    # Pediatric Vascular
+    - "\\b(vein of Galen (malformation|aneurysmal malformation)|VGAM)\\b"
+    - "\\b(Galenic malformation)\\b"
+    - "\\b(choroidal|mural)\\s*(type)?\\b"
+    # Moyamoya
+    - "\\b(Moyamoya|moya.?moya)\\b"
+    - "\\b(Suzuki (stage|grade))\\s*([IV]+|\\d)?\\b"
+    - "\\b(puff of smoke|moyamoya vessels)\\b"
+    - "\\b(indirect (bypass|revascularization))\\b"
+    - "\\b(EDAS|EDMS|EMS)\\b"
+    - "\\b(encephalo.?duro.?arterio.?synangiosis)\\b"
+    # Aneurysm-Related
+    - "\\b(fusiform aneurysm)\\b"
+    - "\\b(dissecting aneurysm)\\b"
+    - "\\b(mycotic aneurysm|infectious aneurysm)\\b"
+    - "\\b(traumatic aneurysm|pseudoaneurysm)\\b"
+    - "\\b(blood blister.?like aneurysm|BBA)\\b"
+    - "\\b(giant aneurysm)\\b"
+
+  # =================================================================
+  # CRITICAL CARE & PHYSIOLOGY (NEW)
+  # =================================================================
+
+  PHYSIOLOGY_CRITICAL_CARE:
+    # Herniation
+    - "\\b(herniation|brain herniation)\\b"
+    - "\\b(uncal herniation)\\b"
+    - "\\b(central (herniation|transtentorial))\\b"
+    - "\\b(transtentorial herniation)\\b"
+    - "\\b(subfalcine herniation|cingulate herniation)\\b"
+    - "\\b(tonsillar herniation)\\b"
+    - "\\b(upward herniation|ascending herniation)\\b"
+    - "\\b(transcalvarial herniation)\\b"
+    - "\\b(coning)\\b"
+    - "\\b(Kernohan.?s notch|Kernohan phenomenon)\\b"
+    - "\\b(Duret hemorrhage)\\b"
+    # ICP/CPP
+    - "\\b(ICP|intracranial pressure)\\s*\\d*\\s*(mmHg)?\\b"
+    - "\\b(CPP|cerebral perfusion pressure)\\s*\\d*\\s*(mmHg)?\\b"
+    - "\\b(elevated ICP|raised ICP|intracranial hypertension)\\b"
+    - "\\b(ICP (crisis|emergency|plateau))\\b"
+    - "\\b(refractory (ICP|intracranial hypertension))\\b"
+    - "\\b(target (ICP|CPP))\\b"
+    - "\\b(ICP.?directed (therapy|management))\\b"
+    - "\\b(CPP.?directed|CPP.?targeted)\\b"
+    # ICP Waveforms
+    - "\\b(Lundberg (A|B|C) wave)\\b"
+    - "\\b(plateau wave)\\b"
+    - "\\b(ICP waveform|P1|P2|P2\\/P1)\\b"
+    - "\\b(compliance|elastance)\\b"
+    - "\\b(pressure.?volume (index|curve)|PVI)\\b"
+    - "\\b(RAP index)\\b"
+    - "\\b(PRx|pressure reactivity)\\b"
+    # Cerebral Physiology
+    - "\\b(Monro[\\s\\-]?Kellie|Monroe.?Kellie)\\b"
+    - "\\b(cerebral autoregulation)\\b"
+    - "\\b(autoregulation (intact|impaired|absent))\\b"
+    - "\\b(CBF|cerebral blood flow)\\s*\\d*\\s*(ml\\/100g\\/min)?\\b"
+    - "\\b(CVR|cerebrovascular resistance)\\b"
+    - "\\b(CMRO2|cerebral metabolic rate)\\b"
+    - "\\b(oxygen extraction fraction|OEF)\\b"
+    - "\\b(ischemic threshold|penumbra)\\b"
+    # Osmotherapy
+    - "\\b(osmotherapy|osmotic therapy)\\b"
+    - "\\b(mannitol)\\s*\\d*%?\\b"
+    - "\\b(hypertonic saline|HTS)\\s*\\d*%?\\b"
+    - "\\b(serum (osmolality|osmolarity|Na))\\b"
+    - "\\b(osmolar gap)\\b"
+    - "\\b(hypernatremia|hyponatremia)\\b"
+    # Temperature
+    - "\\b(targeted temperature management|TTM)\\b"
+    - "\\b(therapeutic hypothermia)\\b"
+    - "\\b(normothermia|fever control)\\b"
+    - "\\b(cooling|rewarming)\\b"
+    # Brain Death
+    - "\\b(brain death|brain.?dead)\\b"
+    - "\\b(death by neurologic criteria|DNC)\\b"
+    - "\\b(apnea test)\\b"
+    - "\\b(brainstem (reflex|testing))\\b"
+    - "\\b(ancillary (test|testing))\\b"
+    - "\\b(cerebral (blood flow |)study|nuclear medicine)\\b"
+    - "\\b(transcranial Doppler|TCD)\\s*(for brain death)?\\b"
+    # Reflexes
+    - "\\b(Cushing.?s (response|reflex|triad))\\b"
+    - "\\b(oculocephalic|doll.?s eyes)\\b"
+    - "\\b(oculovestibular|caloric)\\b"
+    - "\\b(corneal reflex|gag reflex|cough reflex)\\b"
+    - "\\b(pupillary (reflex|response|reactivity))\\b"
+
+  PHYSIOLOGY_CSF:
+    # Production & Absorption
+    - "\\b(CSF (production|formation|secretion))\\b"
+    - "\\b(choroid plexus)\\b"
+    - "\\b(CSF (absorption|resorption))\\b"
+    - "\\b(arachnoid (granulation|villi))\\b"
+    - "\\b(Pacchionian granulation)\\b"
+    - "\\b(CSF (outflow|drainage))\\b"
+    - "\\b(cribriform plate (drainage|absorption))\\b"
+    # Circulation
+    - "\\b(CSF (circulation|flow|dynamics))\\b"
+    - "\\b(third (ventricle|ventriculostomy) (flow|patency))\\b"
+    - "\\b(aqueductal (flow|stenosis|patency))\\b"
+    - "\\b(bulk flow|pulsatile flow)\\b"
+    - "\\b(glymphatic (system|clearance))\\b"
+    - "\\b(perivascular (space|drainage))\\b"
+    - "\\b(Virchow.?Robin space)\\b"
+    # Pressure
+    - "\\b(CSF (pressure|opening pressure))\\s*\\d*\\s*(cmH2O|mmHg)?\\b"
+    - "\\b(lumbar (puncture|tap|drain) (pressure|opening))\\b"
+    - "\\b(CSF (dynamics|pulsatility))\\b"
+    - "\\b(craniospinal (compliance|elastance))\\b"
+    # Composition
+    - "\\b(CSF (protein|glucose|cell count|WBC))\\b"
+    - "\\b(xanthochromia)\\b"
+    - "\\b(CSF (cytology|analysis))\\b"
+    - "\\b(CSF biomarker)\\b"
+
+  # =================================================================
+  # PEDIATRIC NEUROSURGERY (NEW)
+  # =================================================================
+
+  PATHOLOGY_PEDIATRIC:
+    # Craniosynostosis
+    - "\\b(craniosynostosis)\\b"
+    - "\\b(sagittal (synostosis|craniosynostosis))\\b"
+    - "\\b(metopic (synostosis|craniosynostosis))\\b"
+    - "\\b(coronal (synostosis|craniosynostosis))\\b"
+    - "\\b(lambdoid (synostosis|craniosynostosis))\\b"
+    - "\\b(unicoronal|bicoronal)\\b"
+    - "\\b(pansynostosis|multisuture)\\b"
+    - "\\b(scaphocephaly)\\b"
+    - "\\b(trigonocephaly)\\b"
+    - "\\b(plagiocephaly|posterior plagiocephaly)\\b"
+    - "\\b(brachycephaly)\\b"
+    - "\\b(turricephaly|oxycephaly)\\b"
+    - "\\b(kleeblattschädel|cloverleaf)\\b"
+    # Syndromic
+    - "\\b(Crouzon|Apert|Pfeiffer|Saethre.?Chotzen)\\b"
+    - "\\b(Muenke|FGFR)\\b"
+    - "\\b(syndromic craniosynostosis)\\b"
+    # Chiari & Related
+    - "\\b(Chiari\\s*([I]+|[1234])|CM[1234]|CM-?[I]+)\\b"
+    - "\\b(Chiari (type |)(I|1|II|2))\\b"
+    - "\\b(tonsillar (ectopia|descent|herniation))\\s*\\d*\\s*(mm)?\\b"
+    - "\\b(syringomyelia|syrinx|syringobulbia)\\b"
+    - "\\b(holocord syrinx)\\b"
+    - "\\b(hindbrain (herniation|malformation))\\b"
+    # Dysraphism
+    - "\\b(neural tube defect|NTD)\\b"
+    - "\\b(myelomeningocele|MMC)\\b"
+    - "\\b(meningocele)\\b"
+    - "\\b(lipomyelomeningocele|lipoma)\\b"
+    - "\\b(spina bifida (occulta|aperta|cystica))\\b"
+    - "\\b(tethered (cord|spinal cord)|TCS)\\b"
+    - "\\b(tight filum|filum (terminale |)lipoma)\\b"
+    - "\\b(split cord malformation|SCM|diastematomyelia)\\b"
+    - "\\b(dermal sinus|dorsal dermal sinus)\\b"
+    - "\\b(caudal regression|sacral agenesis)\\b"
+    # Encephalocele
+    - "\\b(encephalocele)\\b"
+    - "\\b(occipital encephalocele)\\b"
+    - "\\b(frontoethmoidal encephalocele|sincipital)\\b"
+    - "\\b(basal encephalocele)\\b"
+    - "\\b(nasal (glioma|dermoid))\\b"
+    # Cysts & Malformations
+    - "\\b(arachnoid cyst)\\b"
+    - "\\b(Dandy[\\s\\-]?Walker|DWM|DW (malformation|variant))\\b"
+    - "\\b(Blake.?s pouch cyst)\\b"
+    - "\\b(mega cisterna magna)\\b"
+    - "\\b(posterior fossa cyst)\\b"
+    - "\\b(vermian hypoplasia)\\b"
+    - "\\b(Joubert syndrome)\\b"
+    - "\\b(rhombencephalosynapsis)\\b"
+    # Hydrocephalus
+    - "\\b(hydrocephalus)\\b"
+    - "\\b(communicating hydrocephalus)\\b"
+    - "\\b(obstructive hydrocephalus|non-communicating)\\b"
+    - "\\b(normal pressure hydrocephalus|NPH)\\b"
+    - "\\b(ventriculomegaly)\\b"
+    - "\\b(shunt (malfunction|infection|revision))\\b"
+    - "\\b(ETV|endoscopic third ventriculostomy)\\b"
+    - "\\b(CPC|choroid plexus cauterization)\\b"
+    # Pediatric Tumors
+    - "\\b(optic (pathway |)glioma|OPG)\\b"
+    - "\\b(hypothalamic glioma)\\b"
+    - "\\b(tectal (glioma|plate glioma))\\b"
+    - "\\b(posterior fossa ependymoma)\\b"
+    - "\\b(choroid plexus (papilloma|carcinoma)|CPP|CPC)\\b"
+    # Pediatric Trauma
+    - "\\b(non.?accidental (trauma|injury)|NAT)\\b"
+    - "\\b(abusive head trauma|AHT|shaken baby)\\b"
+    - "\\b(growing skull fracture|leptomeningeal cyst)\\b"
+    - "\\b(pediatric TBI)\\b"
+    - "\\b(SCIWORA)\\b"
+    - "\\b(birth (trauma|injury))\\b"
+
+  ANATOMY_PEDIATRIC:
+    # Fontanelles
+    - "\\b(fontanel(le)?)\\b"
+    - "\\b(anterior fontanel(le)?)\\b"
+    - "\\b(posterior fontanel(le)?)\\b"
+    - "\\b(mastoid fontanel(le)?)\\b"
+    - "\\b(sphenoidal fontanel(le)?)\\b"
+    - "\\b(bulging fontanel(le)?|tense fontanel(le)?)\\b"
+    - "\\b(sunken fontanel(le)?)\\b"
+    # Sutures
+    - "\\b(cranial suture)\\b"
+    - "\\b(sagittal suture)\\b"
+    - "\\b(coronal suture)\\b"
+    - "\\b(lambdoid suture)\\b"
+    - "\\b(metopic suture)\\b"
+    - "\\b(squamosal suture)\\b"
+    - "\\b(suture (patent|fused|open|closed))\\b"
+    # Growth
+    - "\\b(head circumference|HC)\\s*\\d*\\s*(cm|percentile)?\\b"
+    - "\\b(macrocephaly|microcephaly)\\b"
+    - "\\b(cranial (growth|vault growth))\\b"
+    - "\\b(ossification (center|primary|secondary))\\b"
+    - "\\b(growth plate|physis)\\b"
+    # Pediatric Spine
+    - "\\b(pseudosubluxation)\\b"
+    - "\\b(os odontoideum)\\b"
+    - "\\b(atlanto[\\s\\-]?axial (instability|subluxation))\\b"
+    - "\\b(basilar invagination|basilar impression)\\b"
+    - "\\b(pediatric (C-?spine|cervical spine))\\b"
+    - "\\b(synchondrosis)\\b"
+    - "\\b(odontoid (ossification|development))\\b"
+
+  # =================================================================
+  # SKULL BASE - EXPANDED REGIONAL ANATOMY (NEW)
+  # =================================================================
+
+  ANATOMY_SKULL_BASE_ANTERIOR:
+    # Cribriform/Olfactory
+    - "\\b(cribriform plate)\\b"
+    - "\\b(olfactory groove|olfactory fossa)\\b"
+    - "\\b(fovea ethmoidalis)\\b"
+    - "\\b(olfactory (bulb|tract|nerve))\\b"
+    # Planum/Tuberculum
+    - "\\b(limbus sphenoidale)\\b"
+    - "\\b(chiasmatic (sulcus|groove))\\b"
+    # Frontal/Ethmoid
+    - "\\b(frontal sinus)\\b"
+    - "\\b(frontal (bone|plate))\\b"
+    - "\\b(ethmoid(al)? (bone|sinus|cells|air cells))\\b"
+    - "\\b(perpendicular plate)\\b"
+    - "\\b(nasal septum)\\b"
+    # Orbital Roof
+    - "\\b(orbital (roof|plate))\\b"
+    - "\\b(supraorbital (rim|margin|notch|foramen))\\b"
+    - "\\b(frontozygomatic suture)\\b"
+
+  ANATOMY_SKULL_BASE_MIDDLE:
+    # Sella & Parasellar
+    - "\\b(sellar (floor|region))\\b"
+    - "\\b(posterior clinoid)\\b"
+    - "\\b(anterior clinoid|ACP)\\b"
+    - "\\b(carotid (sulcus|groove))\\b"
+    - "\\b(interclinoid ligament|caroticoclinoid)\\b"
+    - "\\b(diaphragma sellae)\\b"
+    # Cavernous Sinus
+    - "\\b(lateral wall of cavernous)\\b"
+    - "\\b(cavernous (ICA|carotid))\\b"
+    - "\\b(Parkinson.?s triangle)\\b"
+    - "\\b(Mullan.?s triangle)\\b"
+    - "\\b(Dorello.?s canal|Dorello canal)\\b"
+    - "\\b(abducens (triangle|course))\\b"
+    # Meckel's Cave
+    - "\\b(Meckel.?s cave|trigeminal cave)\\b"
+    - "\\b(trigeminal (impression|ganglion))\\b"
+    - "\\b(trigeminal cistern)\\b"
+    # Sphenoid
+    - "\\b(sphenoid (sinus|bone|wing))\\b"
+    - "\\b(greater (sphenoid )?wing)\\b"
+    - "\\b(lesser (sphenoid )?wing)\\b"
+    - "\\b(pterygoid (process|plate|canal))\\b"
+    - "\\b(vidian (canal|nerve))\\b"
+    # Middle Fossa Floor
+    - "\\b(middle (cranial |)fossa (floor)?)\\b"
+    - "\\b(temporal (bone|squama))\\b"
+    - "\\b(tegmen (tympani|mastoideum))\\b"
+    - "\\b(arcuate eminence)\\b"
+    - "\\b(greater superficial petrosal|GSPN)\\b"
+    - "\\b(lesser superficial petrosal|LSPN)\\b"
+    - "\\b(petrous (apex|ridge|carotid))\\b"
+
+  ANATOMY_SKULL_BASE_POSTERIOR:
+    # Foramen Magnum Region
+    - "\\b(basion|opisthion)\\b"
+    - "\\b(occipital (bone|condyle))\\b"
+    - "\\b(condylar (fossa|canal|emissary))\\b"
+    - "\\b(hypoglossal canal)\\b"
+    - "\\b(jugular tubercle)\\b"
+    # Clivus
+    - "\\b(clivus|clival)\\b"
+    - "\\b(upper clivus|mid.?clivus|lower clivus)\\b"
+    - "\\b(basiocciput|basisphenoid)\\b"
+    - "\\b(sphenooccipital synchondrosis)\\b"
+    - "\\b(prepontine (cistern|region))\\b"
+    # Jugular Foramen
+    - "\\b(jugular foramen)\\b"
+    - "\\b(pars nervosa|pars vascularis)\\b"
+    - "\\b(jugular (bulb|fossa))\\b"
+    - "\\b(sigmoid (sinus|plate))\\b"
+    - "\\b(sigmoid.?jugular junction)\\b"
+    - "\\b(high.?riding jugular)\\b"
+    # IAC/CPA
+    - "\\b(internal (acoustic|auditory) (canal|meatus)|IAC|IAM)\\b"
+    - "\\b(porus (acusticus)?)\\b"
+    - "\\b(fundus (of IAC)?)\\b"
+    - "\\b(transverse crest|Bill.?s bar|vertical crest)\\b"
+    - "\\b(cerebellopontine (cistern|fissure))\\b"
+    # Petrous
+    - "\\b(petrous (bone|pyramid|apex))\\b"
+    - "\\b(petrous (carotid|ICA))\\b"
+    - "\\b(petrous ridge)\\b"
+    - "\\b(Kawase.?s triangle|Kawase)\\b"
+    - "\\b(posterolateral triangle|Glasscock)\\b"
+    - "\\b(posteromedial triangle)\\b"
+    - "\\b(infratemporal triangle)\\b"
+
+  # =================================================================
+  # BRAIN PARENCHYMA ANATOMY (EXPANDED)
+  # =================================================================
+
+  ANATOMY_BRAIN_CORTICAL:
+    # Lobes
+    - "\\b(frontal lobe|parietal lobe|temporal lobe|occipital lobe)\\b"
+    - "\\b(insular cortex|insula|insular lobe)\\b"
+    # Gyri
+    - "\\b(precentral gyrus|postcentral gyrus)\\b"
+    - "\\b(superior temporal gyrus|middle temporal gyrus|inferior temporal gyrus)\\b"
+    - "\\b(superior frontal gyrus|middle frontal gyrus|inferior frontal gyrus)\\b"
+    - "\\b(cingulate gyrus|parahippocampal gyrus)\\b"
+    - "\\b(angular gyrus|supramarginal gyrus)\\b"
+    - "\\b(fusiform gyrus|lingual gyrus)\\b"
+    # Sulci
+    - "\\b(central sulcus|Rolandic fissure)\\b"
+    - "\\b(sylvian fissure|lateral sulcus)\\b"
+    - "\\b(calcarine sulcus|parieto-occipital sulcus)\\b"
+    - "\\b(interhemispheric fissure)\\b"
+    # Functional Areas
+    - "\\b(Broca.?s area|Broca)\\b"
+    - "\\b(Wernicke.?s area|Wernicke)\\b"
+    - "\\b(motor strip|motor cortex|primary motor)\\b"
+    - "\\b(sensory cortex|primary sensory|somatosensory)\\b"
+    - "\\b(visual cortex|primary visual|V1)\\b"
+    - "\\b(auditory cortex|primary auditory)\\b"
+    - "\\b(SMA|supplementary motor area)\\b"
+    - "\\b(premotor cortex|premotor area)\\b"
+
+  ANATOMY_BRAIN_SUBCORTICAL:
+    # Basal Ganglia
+    - "\\b(basal ganglia)\\b"
+    - "\\b(caudate (nucleus|head|body|tail))\\b"
+    - "\\b(putamen)\\b"
+    - "\\b(globus pallidus|GP|GPi|GPe)\\b"
+    - "\\b(striatum|neostriatum)\\b"
+    - "\\b(lentiform nucleus|lenticular nucleus)\\b"
+    # Thalamus
+    - "\\b(thalamus|thalamic)\\b"
+    - "\\b(pulvinar)\\b"
+    - "\\b(VPL|ventral posterolateral)\\b"
+    - "\\b(VPM|ventral posteromedial)\\b"
+    - "\\b(VIM|ventral intermediate)\\b"
+    - "\\b(centromedian|CM nucleus)\\b"
+    # Other
+    - "\\b(internal capsule|anterior limb|posterior limb|genu)\\b"
+    - "\\b(subthalamic nucleus|STN)\\b"
+    - "\\b(hypothalamus|hypothalamic)\\b"
+    - "\\b(mammillary body|mammillary bodies)\\b"
+    - "\\b(amygdala|amygdaloid)\\b"
+    - "\\b(hippocampus|hippocampal)\\b"
+    - "\\b(fornix|forniceal)\\b"
+
+  ANATOMY_BRAIN_WHITE_MATTER:
+    # Major Tracts
+    - "\\b(corticospinal tract|CST|pyramidal tract)\\b"
+    - "\\b(arcuate fasciculus|AF)\\b"
+    - "\\b(corpus callosum|CC|callosal)\\b"
+    - "\\b(genu|splenium|body of corpus callosum)\\b"
+    # Association Fibers
+    - "\\b(corona radiata)\\b"
+    - "\\b(optic radiations|Meyer.?s loop)\\b"
+    - "\\b(SLF|superior longitudinal fasciculus)\\b"
+    - "\\b(IFOF|inferior fronto-occipital fasciculus)\\b"
+    - "\\b(ILF|inferior longitudinal fasciculus)\\b"
+    - "\\b(uncinate fasciculus|UF)\\b"
+    - "\\b(cingulum|cingulum bundle)\\b"
+    # Commissural
+    - "\\b(anterior commissure)\\b"
+    - "\\b(posterior commissure)\\b"
+
+  ANATOMY_BRAIN_BRAINSTEM:
+    # Midbrain
+    - "\\b(midbrain|mesencephalon)\\b"
+    - "\\b(cerebral peduncle|crus cerebri)\\b"
+    - "\\b(tectum|quadrigeminal plate)\\b"
+    - "\\b(tegmentum)\\b"
+    - "\\b(superior colliculus|inferior colliculus)\\b"
+    - "\\b(red nucleus)\\b"
+    - "\\b(substantia nigra|SN|pars compacta|pars reticulata)\\b"
+    - "\\b(periaqueductal gray|PAG)\\b"
+    # Pons
+    - "\\b(pons|pontine)\\b"
+    - "\\b(basis pontis)\\b"
+    - "\\b(MCP|middle cerebellar peduncle)\\b"
+    - "\\b(SCP|superior cerebellar peduncle)\\b"
+    - "\\b(locus coeruleus)\\b"
+    # Medulla
+    - "\\b(medulla (oblongata)?|medullary)\\b"
+    - "\\b(pyramid|pyramidal)\\b"
+    - "\\b(olive|olivary)\\b"
+    - "\\b(ICP|inferior cerebellar peduncle)\\b"
+    - "\\b(gracile|cuneate)\\s*(nucleus|fasciculus)?\\b"
+
+  ANATOMY_BRAIN_CEREBELLUM:
+    # Major Structures
+    - "\\b(cerebellum|cerebellar)\\b"
+    - "\\b(vermis|vermal)\\b"
+    - "\\b(cerebellar hemisphere)\\b"
+    - "\\b(cerebellar tonsil)\\b"
+    - "\\b(flocculonodular lobe)\\b"
+    # Deep Nuclei
+    - "\\b(dentate nucleus)\\b"
+    - "\\b(fastigial nucleus)\\b"
+    - "\\b(interposed nuclei|emboliform|globose)\\b"
+    # Peduncles
+    - "\\b(cerebellar peduncle)\\b"
+    - "\\b(brachium (pontis|conjunctivum|restiforme))\\b"
+
+  # =================================================================
+  # CSF SPACES (EXPANDED)
+  # =================================================================
+
+  ANATOMY_MENINGES:
+    # Meningeal Layers
+    - "\\b(dura mater|dura|dural)\\b"
+    - "\\b(arachnoid (mater)?|arachnoid membrane)\\b"
+    - "\\b(pia mater|pia|pial)\\b"
+    - "\\b(leptomeninges|leptomeningeal)\\b"
+    - "\\b(pachymeninges|pachymeningeal)\\b"
+    # Dural Folds
+    - "\\b(falx cerebri|falx)\\b"
+    - "\\b(tentorium cerebelli|tentorium|tentorial)\\b"
+    - "\\b(falx cerebelli)\\b"
+    - "\\b(tentorial incisura|tentorial notch)\\b"
+    - "\\b(free edge)\\b"
+
+  ANATOMY_VENTRICULAR:
+    # Ventricles
+    - "\\b(lateral ventricle)\\b"
+    - "\\b(frontal horn|temporal horn|occipital horn|atrium)\\b"
+    - "\\b(third ventricle)\\b"
+    - "\\b(fourth ventricle)\\b"
+    - "\\b(cerebral aqueduct|aqueduct of Sylvius)\\b"
+    # Foramina
+    - "\\b(foramen of Monro|interventricular foramen)\\b"
+    - "\\b(foramen of Magendie|median aperture)\\b"
+    - "\\b(foramen of Luschka|lateral aperture)\\b"
+    # Structures
+    - "\\b(septum pellucidum|cavum septum pellucidum)\\b"
+    - "\\b(massa intermedia|interthalamic adhesion)\\b"
+    - "\\b(velum interpositum)\\b"
+
+  ANATOMY_CISTERNAL:
+    # Cisterns
+    - "\\b(sylvian cistern|cistern of lateral fissure)\\b"
+    - "\\b(suprasellar cistern|chiasmatic cistern)\\b"
+    - "\\b(interpeduncular cistern)\\b"
+    - "\\b(prepontine cistern)\\b"
+    - "\\b(quadrigeminal cistern|cistern of great vein)\\b"
+    - "\\b(ambient cistern)\\b"
+    - "\\b(cisterna magna|cerebellomedullary cistern)\\b"
+    - "\\b(crural cistern)\\b"
+    - "\\b(pontine cistern)\\b"
+    - "\\b(Liliequist membrane)\\b"
+
+  # =================================================================
+  # ADDITIONAL PATHOLOGY (EXPANDED)
+  # =================================================================
+
+  PATHOLOGY_TRAUMA:
+    # TBI Classification
+    - "\\b(TBI|traumatic brain injury)\\b"
+    - "\\b(mild TBI|moderate TBI|severe TBI)\\b"
+    - "\\b(concussion|post-concussion)\\b"
+    - "\\b(DAI|diffuse axonal injury)\\b"
+    # Hemorrhage Types
+    - "\\b(EDH|epidural hematoma|epidural hemorrhage)\\b"
+    - "\\b(SDH|subdural hematoma|subdural hemorrhage)\\b"
+    - "\\b(acute SDH|chronic SDH|subacute SDH)\\b"
+    - "\\b(contusion|hemorrhagic contusion)\\b"
+    - "\\b(traumatic SAH|tSAH)\\b"
+    - "\\b(intraventricular hemorrhage|IVH)\\b"
+    # Skull Fractures
+    - "\\b(skull fracture)\\b"
+    - "\\b(depressed (skull )?fracture)\\b"
+    - "\\b(linear fracture|comminuted fracture)\\b"
+    - "\\b(basilar skull fracture|skull base fracture)\\b"
+    - "\\b(pneumocephalus)\\b"
+    - "\\b(Battle.?s sign|raccoon eyes)\\b"
+
+  PATHOLOGY_DEGENERATIVE:
+    # Disc Disease
+    - "\\b(disc herniation|herniated disc|HNP)\\b"
+    - "\\b(disc bulge|disc protrusion|disc extrusion)\\b"
+    - "\\b(degenerative disc disease|DDD)\\b"
+    # Spondylosis
+    - "\\b(spondylosis)\\b"
+    - "\\b(cervical spondylosis|lumbar spondylosis)\\b"
+    - "\\b(spondylolisthesis)\\b"
+    - "\\b(spondylolysis)\\b"
+    # Stenosis
+    - "\\b(spinal stenosis|central stenosis)\\b"
+    - "\\b(foraminal stenosis|lateral stenosis)\\b"
+    - "\\b(cervical stenosis|lumbar stenosis)\\b"
+    # Clinical Syndromes
+    - "\\b(myelopathy|cervical myelopathy)\\b"
+    - "\\b(radiculopathy)\\b"
+    - "\\b(neurogenic claudication)\\b"
+    - "\\b(cauda equina syndrome)\\b"
+
+  PATHOLOGY_INFECTIOUS:
+    # Brain Infections
+    - "\\b(brain abscess|cerebral abscess)\\b"
+    - "\\b(subdural empyema)\\b"
+    - "\\b(epidural abscess)\\b"
+    - "\\b(meningitis|bacterial meningitis)\\b"
+    - "\\b(encephalitis|viral encephalitis)\\b"
+    - "\\b(ventriculitis)\\b"
+    # Specific Infections
+    - "\\b(neurocysticercosis|NCC)\\b"
+    - "\\b(toxoplasmosis)\\b"
+    - "\\b(PML|progressive multifocal leukoencephalopathy)\\b"
+    - "\\b(tuberculoma|TB meningitis)\\b"
+    - "\\b(fungal (infection|abscess|meningitis))\\b"
+    - "\\b(osteomyelitis|discitis|spondylodiscitis)\\b"
+
+  PATHOLOGY_HYDROCEPHALUS:
+    # Types
+    - "\\b(hydrocephalus)\\b"
+    - "\\b(communicating hydrocephalus)\\b"
+    - "\\b(obstructive hydrocephalus|non-communicating hydrocephalus)\\b"
+    - "\\b(normal pressure hydrocephalus|NPH)\\b"
+    - "\\b(idiopathic NPH|iNPH)\\b"
+    - "\\b(secondary NPH)\\b"
+    - "\\b(post-hemorrhagic hydrocephalus)\\b"
+    # Clinical
+    - "\\b(ventriculomegaly)\\b"
+    - "\\b(Hakim.?s triad)\\b"
+    - "\\b(gait disturbance|urinary incontinence|dementia)\\b"
+    # Treatment
+    - "\\b(VP shunt|ventriculoperitoneal)\\b"
+    - "\\b(VA shunt|ventriculoatrial)\\b"
+    - "\\b(LP shunt|lumboperitoneal)\\b"
+    - "\\b(shunt (malfunction|infection|revision))\\b"
+    - "\\b(ETV|endoscopic third ventriculostomy)\\b"
+
+  PATHOLOGY_CONGENITAL:
+    # Neural Tube Defects
+    - "\\b(anencephaly)\\b"
+    - "\\b(holoprosencephaly)\\b"
+    - "\\b(agenesis of corpus callosum|callosal agenesis)\\b"
+    - "\\b(lissencephaly|pachygyria|polymicrogyria)\\b"
+    - "\\b(schizencephaly)\\b"
+    - "\\b(septo-optic dysplasia)\\b"
+    # Vascular
+    - "\\b(Sturge-Weber syndrome)\\b"
+    - "\\b(von Hippel-Lindau|VHL)\\b"
+    - "\\b(hereditary hemorrhagic telangiectasia|HHT)\\b"
+
+  # =================================================================
+  # FUNCTIONAL & MONITORING (EXPANDED)
+  # =================================================================
+
+  FUNCTIONAL_NEURO:
+    # DBS
+    - "\\b(deep brain stimulation|DBS)\\b"
+    - "\\b(DBS (lead|electrode|target))\\b"
+    - "\\b(STN DBS|GPi DBS|VIM DBS)\\b"
+    - "\\b(bilateral DBS|unilateral DBS)\\b"
+    # Epilepsy Surgery
+    - "\\b(seizure focus|epileptogenic zone)\\b"
+    - "\\b(seizure (onset|propagation))\\b"
+    - "\\b(cortical mapping|Wada test)\\b"
+    - "\\b(subdural grid|depth electrode|SEEG)\\b"
+    - "\\b(temporal lobectomy|amygdalohippocampectomy)\\b"
+    - "\\b(corpus callosotomy)\\b"
+    - "\\b(hemispherectomy|functional hemispherectomy)\\b"
+    - "\\b(VNS|vagus nerve stimulator)\\b"
+    - "\\b(RNS|responsive neurostimulation)\\b"
+    # Mapping
+    - "\\b(motor mapping|language mapping|sensory mapping)\\b"
+    - "\\b(awake craniotomy|asleep-awake-asleep)\\b"
+    - "\\b(direct cortical stimulation|DCS)\\b"
+    - "\\b(MEP|motor evoked potential)\\b"
+    - "\\b(SSEP|somatosensory evoked potential)\\b"
+
+  PHYSIOLOGY_MONITORING:
+    # Intraoperative
+    - "\\b(IONM|intraoperative neurophysiological monitoring)\\b"
+    - "\\b(neuromonitoring)\\b"
+    - "\\b(MEP|motor evoked potential)\\b"
+    - "\\b(SSEP|somatosensory evoked potential)\\b"
+    - "\\b(EMG|electromyography)\\b"
+    - "\\b(BAEP|brainstem auditory evoked potential)\\b"
+    - "\\b(VEP|visual evoked potential)\\b"
+    - "\\b(D-wave|direct wave)\\b"
+    # Diagnostic
+    - "\\b(EEG|electroencephalography)\\b"
+    - "\\b(continuous EEG|cEEG)\\b"
+    - "\\b(video EEG|vEEG)\\b"
+    - "\\b(ictal|interictal)\\b"
+
+  MEDICATION:
+    # Osmotic Agents
+    - "\\b(mannitol)\\b"
+    - "\\b(hypertonic saline|3% saline|23\\.4% saline)\\b"
+    # Steroids
+    - "\\b(dexamethasone|Decadron)\\b"
+    - "\\b(methylprednisolone)\\b"
+    # Anticonvulsants
+    - "\\b(levetiracetam|Keppra)\\b"
+    - "\\b(phenytoin|Dilantin|fosphenytoin)\\b"
+    - "\\b(valproic acid|valproate|Depakote)\\b"
+    - "\\b(lacosamide|Vimpat)\\b"
+    - "\\b(carbamazepine|Tegretol)\\b"
+    # Chemotherapy
+    - "\\b(temozolomide|TMZ|Temodar)\\b"
+    - "\\b(bevacizumab|Avastin)\\b"
+    - "\\b(carmustine|BCNU|Gliadel)\\b"
+    - "\\b(lomustine|CCNU)\\b"
+    # Vasospasm
+    - "\\b(nimodipine|Nimotop)\\b"
+    # Other
+    - "\\b(aminocaproic acid|Amicar)\\b"
+    - "\\b(tranexamic acid|TXA)\\b"
+
+  OUTCOME_COMPLICATION:
+    # Surgical Complications
+    - "\\b(CSF leak|CSF fistula)\\b"
+    - "\\b(pseudomeningocele)\\b"
+    - "\\b(wound (infection|dehiscence))\\b"
+    - "\\b(surgical site infection|SSI)\\b"
+    - "\\b(hematoma|postoperative hematoma)\\b"
+    - "\\b(recurrence|tumor recurrence)\\b"
+    # Hardware
+    - "\\b(hardware failure|construct failure)\\b"
+    - "\\b(screw pullout|rod fracture)\\b"
+    - "\\b(adjacent segment (disease|degeneration))\\b"
+    # Neurological
+    - "\\b(new neurological deficit)\\b"
+    - "\\b(postoperative (weakness|numbness|aphasia))\\b"
+    - "\\b(cranial nerve (injury|palsy|deficit))\\b"
+    - "\\b(stroke|ischemic complication)\\b"
+    - "\\b(seizure|postoperative seizure)\\b"
+
+
+# =================================================================
+# NORMALIZATIONS
+# =================================================================
+# Maps abbreviated terms to their full standardized forms
+
+normalizations:
+  # Cranial nerves
+  "CN I": "Olfactory Nerve (CN I)"
+  "CN II": "Optic Nerve (CN II)"
+  "CN III": "Oculomotor Nerve (CN III)"
+  "CN IV": "Trochlear Nerve (CN IV)"
+  "CN V": "Trigeminal Nerve (CN V)"
+  "CN VI": "Abducens Nerve (CN VI)"
+  "CN VII": "Facial Nerve (CN VII)"
+  "CN VIII": "Vestibulocochlear Nerve (CN VIII)"
+  "CN IX": "Glossopharyngeal Nerve (CN IX)"
+  "CN X": "Vagus Nerve (CN X)"
+  "CN XI": "Accessory Nerve (CN XI)"
+  "CN XII": "Hypoglossal Nerve (CN XII)"
+  
+  # Vascular abbreviations
+  "ICA": "Internal Carotid Artery"
+  "MCA": "Middle Cerebral Artery"
+  "ACA": "Anterior Cerebral Artery"
+  "PCA": "Posterior Cerebral Artery"
+  "VA": "Vertebral Artery"
+  "BA": "Basilar Artery"
+  "SCA": "Superior Cerebellar Artery"
+  "AICA": "Anterior Inferior Cerebellar Artery"
+  "PICA": "Posterior Inferior Cerebellar Artery"
+  "ACOM": "Anterior Communicating Artery"
+  "PCOM": "Posterior Communicating Artery"
+  "ACoA": "Anterior Communicating Artery"
+  "PCoA": "Posterior Communicating Artery"
+  
+  # Segments
+  "M1": "M1 Segment (MCA)"
+  "M2": "M2 Segment (MCA)"
+  "M3": "M3 Segment (MCA)"
+  "M4": "M4 Segment (MCA)"
+  "A1": "A1 Segment (ACA)"
+  "A2": "A2 Segment (ACA)"
+  "P1": "P1 Segment (PCA)"
+  "P2": "P2 Segment (PCA)"
+  
+  # Pathology
+  "AVM": "Arteriovenous Malformation"
+  "SAH": "Subarachnoid Hemorrhage"
+  "ICH": "Intracerebral Hemorrhage"
+  "GBM": "Glioblastoma Multiforme"
+  "DBS": "Deep Brain Stimulation"
+  "DCI": "Delayed Cerebral Ischemia"
+  
+  # Venous
+  "SSS": "Superior Sagittal Sinus"
+  "ISS": "Inferior Sagittal Sinus"
+  "TS": "Transverse Sinus"
+  "SS": "Sigmoid Sinus"
+  
+  # Procedures
+  "GTR": "Gross Total Resection"
+  "STR": "Subtotal Resection"
+  "ACDF": "Anterior Cervical Discectomy and Fusion"
+  
+  # Anatomy
+  "CPA": "Cerebellopontine Angle"
+  "IAC": "Internal Auditory Canal"
+  "IAM": "Internal Auditory Meatus"
+
+  # Peripheral Nerve
+  "CTS": "Carpal Tunnel Syndrome"
+  "AIN": "Anterior Interosseous Nerve"
+  "PIN": "Posterior Interosseous Nerve"
+  "TOS": "Thoracic Outlet Syndrome"
+  "OBPI": "Obstetric Brachial Plexus Injury"
+  "OBPL": "Obstetric Brachial Plexus Lesion"
+  "LFCN": "Lateral Femoral Cutaneous Nerve"
+
+  # Radiosurgery
+  "GK": "Gamma Knife"
+  "GKRS": "Gamma Knife Radiosurgery"
+  "SRS": "Stereotactic Radiosurgery"
+  "SBRT": "Stereotactic Body Radiation Therapy"
+  "IMRT": "Intensity Modulated Radiation Therapy"
+  "VMAT": "Volumetric Modulated Arc Therapy"
+  "WBRT": "Whole Brain Radiation Therapy"
+  "PCI": "Prophylactic Cranial Irradiation"
+  "CSI": "Craniospinal Irradiation"
+
+  # Endovascular
+  "TICI": "Thrombolysis in Cerebral Infarction"
+  "mTICI": "Modified TICI"
+  "ASPECTS": "Alberta Stroke Program Early CT Score"
+  "EVT": "Endovascular Thrombectomy"
+  "BTO": "Balloon Test Occlusion"
+  "PVO": "Parent Vessel Occlusion"
+  "PED": "Pipeline Embolization Device"
+  "FD": "Flow Diverter"
+  "GDC": "Guglielmi Detachable Coil"
+  "DSA": "Digital Subtraction Angiography"
+  "TAE": "Transarterial Embolization"
+  "TVE": "Transvenous Embolization"
+
+  # Pain
+  "TN": "Trigeminal Neuralgia"
+  "GPN": "Glossopharyngeal Neuralgia"
+  "PHN": "Postherpetic Neuralgia"
+  "CRPS": "Complex Regional Pain Syndrome"
+  "RSD": "Reflex Sympathetic Dystrophy"
+  "FBSS": "Failed Back Surgery Syndrome"
+  "MVD": "Microvascular Decompression"
+  "SCS": "Spinal Cord Stimulation"
+  "DRG": "Dorsal Root Ganglion"
+  "DREZ": "Dorsal Root Entry Zone"
+  "SDR": "Selective Dorsal Rhizotomy"
+  "IDDS": "Intrathecal Drug Delivery System"
+  "ITB": "Intrathecal Baclofen"
+  "MCS": "Motor Cortex Stimulation"
+  "ESI": "Epidural Steroid Injection"
+  "MBB": "Medial Branch Block"
+
+  # Molecular
+  "IDH": "Isocitrate Dehydrogenase"
+  "IDH-mut": "IDH Mutant"
+  "IDH-wt": "IDH Wildtype"
+  "MGMT": "O6-Methylguanine-DNA Methyltransferase"
+  "DMG": "Diffuse Midline Glioma"
+  "DIPG": "Diffuse Intrinsic Pontine Glioma"
+  "JPA": "Juvenile Pilocytic Astrocytoma"
+  "PXA": "Pleomorphic Xanthoastrocytoma"
+  "DNET": "Dysembryoplastic Neuroepithelial Tumor"
+  "SEGA": "Subependymal Giant Cell Astrocytoma"
+  "ATRT": "Atypical Teratoid Rhabdoid Tumor"
+  "PNET": "Primitive Neuroectodermal Tumor"
+  "PCNSL": "Primary CNS Lymphoma"
+  "MPNST": "Malignant Peripheral Nerve Sheath Tumor"
+  "NFPA": "Non-Functioning Pituitary Adenoma"
+  "RCC": "Rathke's Cleft Cyst"
+  "SFT": "Solitary Fibrous Tumor"
+
+  # Spine Deformity
+  "SVA": "Sagittal Vertical Axis"
+  "PI": "Pelvic Incidence"
+  "PT": "Pelvic Tilt"
+  "LL": "Lumbar Lordosis"
+  "TK": "Thoracic Kyphosis"
+  "PI-LL": "Pelvic Incidence minus Lumbar Lordosis"
+  "PJK": "Proximal Junctional Kyphosis"
+  "PJF": "Proximal Junctional Failure"
+  "DJK": "Distal Junctional Kyphosis"
+  "AIS": "Adolescent Idiopathic Scoliosis"
+  "PSO": "Pedicle Subtraction Osteotomy"
+  "SPO": "Smith-Petersen Osteotomy"
+  "VCR": "Vertebral Column Resection"
+  "ACR": "Anterior Column Realignment"
+  "3CO": "3-Column Osteotomy"
+
+  # Spine Biomechanics
+  "FSU": "Functional Spinal Unit"
+  "IAR": "Instantaneous Axis of Rotation"
+  "TLICS": "Thoracolumbar Injury Classification and Severity"
+  "SLIC": "Subaxial Cervical Injury Classification"
+  "PLC": "Posterior Ligamentous Complex"
+  "BMD": "Bone Mineral Density"
+  "VCF": "Vertebral Compression Fracture"
+  "PMMA": "Polymethylmethacrylate"
+
+  # Vascular Malformations
+  "SM": "Spetzler-Martin"
+  "NPPB": "Normal Perfusion Pressure Breakthrough"
+  "CCM": "Cerebral Cavernous Malformation"
+  "DVA": "Developmental Venous Anomaly"
+  "dAVF": "Dural Arteriovenous Fistula"
+  "CCF": "Carotid-Cavernous Fistula"
+  "VGAM": "Vein of Galen Aneurysmal Malformation"
+  "EDAS": "Encephaloduroarteriosynangiosis"
+  "BBA": "Blood Blister-like Aneurysm"
+
+  # Critical Care
+  "ICP": "Intracranial Pressure"
+  "CPP": "Cerebral Perfusion Pressure"
+  "CBF": "Cerebral Blood Flow"
+  "CVR": "Cerebrovascular Resistance"
+  "CMRO2": "Cerebral Metabolic Rate of Oxygen"
+  "OEF": "Oxygen Extraction Fraction"
+  "PVI": "Pressure-Volume Index"
+  "PRx": "Pressure Reactivity Index"
+  "HTS": "Hypertonic Saline"
+  "TTM": "Targeted Temperature Management"
+  "DNC": "Death by Neurologic Criteria"
+  "TCD": "Transcranial Doppler"
+
+  # Pediatric
+  "MMC": "Myelomeningocele"
+  "NTD": "Neural Tube Defect"
+  "TCS": "Tethered Cord Syndrome"
+  "SCM": "Split Cord Malformation"
+  "DWM": "Dandy-Walker Malformation"
+  "CM1": "Chiari I Malformation"
+  "CM2": "Chiari II Malformation"
+  "NAT": "Non-Accidental Trauma"
+  "AHT": "Abusive Head Trauma"
+  "SCIWORA": "Spinal Cord Injury Without Radiographic Abnormality"
+  "HC": "Head Circumference"
+  "OPG": "Optic Pathway Glioma"
+  "CPP": "Choroid Plexus Papilloma"
+  "CPC": "Choroid Plexus Carcinoma"
+
+  # Skull Base
+  "ACP": "Anterior Clinoid Process"
+  "CS": "Cavernous Sinus"
+  "GSPN": "Greater Superficial Petrosal Nerve"
+  "LSPN": "Lesser Superficial Petrosal Nerve"
+
+  # Brain Anatomy
+  "SMA": "Supplementary Motor Area"
+  "STN": "Subthalamic Nucleus"
+  "GPi": "Globus Pallidus Internus"
+  "GPe": "Globus Pallidus Externus"
+  "VIM": "Ventral Intermediate Nucleus"
+  "VPL": "Ventral Posterolateral Nucleus"
+  "VPM": "Ventral Posteromedial Nucleus"
+  "CST": "Corticospinal Tract"
+  "SLF": "Superior Longitudinal Fasciculus"
+  "IFOF": "Inferior Fronto-Occipital Fasciculus"
+  "ILF": "Inferior Longitudinal Fasciculus"
+  "PAG": "Periaqueductal Gray"
+  "MCP": "Middle Cerebellar Peduncle"
+  "SCP": "Superior Cerebellar Peduncle"
+
+  # Trauma
+  "TBI": "Traumatic Brain Injury"
+  "DAI": "Diffuse Axonal Injury"
+  "EDH": "Epidural Hematoma"
+  "SDH": "Subdural Hematoma"
+  "IVH": "Intraventricular Hemorrhage"
+
+  # Degenerative
+  "HNP": "Herniated Nucleus Pulposus"
+  "DDD": "Degenerative Disc Disease"
+
+  # Functional
+  "SEEG": "Stereoelectroencephalography"
+  "VNS": "Vagus Nerve Stimulation"
+  "RNS": "Responsive Neurostimulation"
+  "MEP": "Motor Evoked Potential"
+  "SSEP": "Somatosensory Evoked Potential"
+  "IONM": "Intraoperative Neurophysiological Monitoring"
+  "BAEP": "Brainstem Auditory Evoked Potential"
+  "VEP": "Visual Evoked Potential"
+  "EEG": "Electroencephalography"
+  "EMG": "Electromyography"
+
+  # Hydrocephalus
+  "NPH": "Normal Pressure Hydrocephalus"
+  "iNPH": "Idiopathic Normal Pressure Hydrocephalus"
+  "ETV": "Endoscopic Third Ventriculostomy"
+  "VP": "Ventriculoperitoneal"
+  "VA": "Ventriculoatrial"
+  "LP": "Lumboperitoneal"
+
+  # Medications
+  "TMZ": "Temozolomide"
+  "BCNU": "Carmustine"
+  "CCNU": "Lomustine"
+  "TXA": "Tranexamic Acid"
+
+  # Device/Technology (NEW)
+  "GK": "Gamma Knife"
+  "PED": "Pipeline Embolization Device"
+  "CUSA": "Cavitron Ultrasonic Surgical Aspirator"
+  "iMRI": "Intraoperative MRI"
+  "iCT": "Intraoperative CT"
+  "5-ALA": "5-Aminolevulinic Acid"
+  "ICG": "Indocyanine Green"
+  "ROSA": "Robotic Stereotactic Assistant"
+  "CRW": "Cosman-Roberts-Wells"
+  "BRW": "Brown-Roberts-Wells"
+  "WEB": "Woven EndoBridge"
+  "FRED": "Flow Re-direction Endoluminal Device"
+
+  # Measurement Units (NEW)
+  "Gy": "Gray"
+  "cGy": "Centigray"
+  "mmHg": "Millimeters of Mercury"
+  "cmH2O": "Centimeters of Water"

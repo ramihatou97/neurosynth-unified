@@ -1,0 +1,88 @@
+"""
+NeuroSynth v2.0 - Ingest Module
+"""
+
+from .section_detector import (
+    SectionDetector,
+    OutlineBasedSectionDetector,
+)
+
+from .image_extractor import (
+    NeuroImageExtractor,
+    ImageExtractionConfig,
+)
+
+from .table_extractor import (
+    TableExtractor,
+    TableExtractionConfig,
+)
+
+from .fusion import (
+    ImageChunkLinker,
+    EmbeddingFuser,
+)
+
+from .embeddings import (
+    TextEmbedder,
+    ImageEmbedder,
+    OpenAITextEmbedder,
+    VoyageTextEmbedder,
+    LocalTextEmbedder,
+    CLIPImageEmbedder,
+    BiomedCLIPImageEmbedder,
+    create_text_embedder,
+    create_image_embedder,
+)
+
+from .pipeline import (
+    NeuroIngestPipeline,
+    PipelineConfig,
+    PipelineResult,
+    ProcessingStage,
+    ingest_document,
+    ingest_directory,
+)
+
+from .contextual_preprocessor import (
+    ContextualPreprocessor,
+    ContextConfig,
+    ContextMode,
+    ContextResult,
+)
+
+__all__ = [
+    # Section Detection
+    "SectionDetector",
+    "OutlineBasedSectionDetector",
+    # Image Extraction
+    "NeuroImageExtractor",
+    "ImageExtractionConfig",
+    # Table Extraction
+    "TableExtractor",
+    "TableExtractionConfig",
+    # Fusion
+    "ImageChunkLinker",
+    "EmbeddingFuser",
+    # Embeddings
+    "TextEmbedder",
+    "ImageEmbedder",
+    "OpenAITextEmbedder",
+    "VoyageTextEmbedder",
+    "LocalTextEmbedder",
+    "CLIPImageEmbedder",
+    "BiomedCLIPImageEmbedder",
+    "create_text_embedder",
+    "create_image_embedder",
+    # Pipeline
+    "NeuroIngestPipeline",
+    "PipelineConfig",
+    "PipelineResult",
+    "ProcessingStage",
+    "ingest_document",
+    "ingest_directory",
+    # Contextual Preprocessing
+    "ContextualPreprocessor",
+    "ContextConfig",
+    "ContextMode",
+    "ContextResult",
+]

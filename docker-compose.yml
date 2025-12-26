@@ -1,0 +1,153 @@
+# NeuroSynth Unified - Docker Compose
+# =====================================
+# Local development and deployment configuration
+
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # API Service
+  # ===========================================================================
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime  # Use 'development' for hot reload
+    container_name: neurosynth-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://neurosynth:neurosynth@postgres:5432/neurosynth
+      - FAISS_INDEX_DIR=/app/indexes
+      - VOYAGE_API_KEY=${VOYAGE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-sonnet-4-20250514}
+      - DEBUG=${DEBUG:-false}
+    volumes:
+      - ./indexes:/app/indexes:rw
+      - ./data:/app/data:rw
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - neurosynth-network
+
+  # ===========================================================================
+  # PostgreSQL with pgvector
+  # ===========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: neurosynth-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=neurosynth
+      - POSTGRES_PASSWORD=neurosynth
+      - POSTGRES_DB=neurosynth
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neurosynth -d neurosynth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - neurosynth-network
+
+  # ===========================================================================
+  # Redis (Optional - for caching)
+  # ===========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: neurosynth-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - neurosynth-network
+    profiles:
+      - with-redis
+
+  # ===========================================================================
+  # pgAdmin (Optional - database management UI)
+  # ===========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: neurosynth-pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@neurosynth.local
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      - postgres
+    networks:
+      - neurosynth-network
+    profiles:
+      - with-pgadmin
+
+# ===========================================================================
+# Volumes
+# ===========================================================================
+volumes:
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+  pgadmin-data:
+    driver: local
+
+# ===========================================================================
+# Networks
+# ===========================================================================
+networks:
+  neurosynth-network:
+    driver: bridge
+
+# ===========================================================================
+# Usage:
+# ===========================================================================
+# 
+# Start services:
+#   docker-compose up -d
+#
+# Start with optional services:
+#   docker-compose --profile with-redis --profile with-pgadmin up -d
+#
+# View logs:
+#   docker-compose logs -f api
+#
+# Stop services:
+#   docker-compose down
+#
+# Rebuild after code changes:
+#   docker-compose build api
+#   docker-compose up -d api
+#
+# Shell into container:
+#   docker-compose exec api bash
+#
+# Run tests:
+#   docker-compose exec api pytest
+#
+# ===========================================================================
