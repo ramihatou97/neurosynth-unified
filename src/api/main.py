@@ -28,7 +28,8 @@ from src.api.routes import (
     search_router,
     rag_router,
     documents_router,
-    health_router
+    health_router,
+    synthesis_router
 )
 
 # Configure logging
@@ -124,6 +125,7 @@ Currently open access. Production deployments should add authentication.
     app.include_router(search_router, prefix="/api/v1")
     app.include_router(rag_router, prefix="/api/v1")
     app.include_router(documents_router, prefix="/api/v1")
+    app.include_router(synthesis_router)
     
     # Exception handlers
     @app.exception_handler(RequestValidationError)
