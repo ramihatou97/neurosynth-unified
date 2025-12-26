@@ -26,6 +26,47 @@ router = APIRouter(prefix="/search", tags=["Search"])
 
 
 # =============================================================================
+# Helper Functions
+# =============================================================================
+
+def convert_to_result_item(result) -> SearchResultItem:
+    """
+    Convert SearchResult (from search_service) to SearchResultItem (API response).
+
+    Handles the new shared.models.SearchResult structure with synthesis fields.
+    """
+    # Serialize images to dicts for JSON response
+    images_data = []
+    if result.images:
+        for img in result.images:
+            images_data.append({
+                'image_id': img.id,
+                'file_path': str(img.file_path) if hasattr(img, 'file_path') else '',
+                'caption': img.vlm_caption or img.caption or '',
+                'image_type': img.image_type,
+                'page_number': img.page_number
+            })
+
+    return SearchResultItem(
+        chunk_id=result.chunk_id,
+        document_id=result.document_id,
+        content=result.content,
+        title=result.title,
+        chunk_type=result.chunk_type.value if hasattr(result.chunk_type, 'value') else str(result.chunk_type),
+        page_start=result.page_start,
+        entity_names=result.entity_names,
+        image_ids=result.image_ids,
+        authority_score=result.authority_score,
+        keyword_score=result.keyword_score,
+        semantic_score=result.semantic_score,
+        final_score=result.final_score,
+        document_title=result.document_title,
+        cuis=result.cuis,
+        images=images_data
+    )
+
+
+# =============================================================================
 # Search Endpoints
 # =============================================================================
 
@@ -84,29 +125,8 @@ async def search(
             rerank=request.rerank
         )
         
-        # Convert to response model
-        items = []
-        for r in result.results:
-            items.append(SearchResultItem(
-                id=r.id,
-                content=r.content,
-                score=r.score,
-                result_type=r.result_type,
-                document_id=r.document_id,
-                page_number=r.page_number,
-                chunk_type=r.chunk_type,
-                specialty=r.specialty,
-                image_type=r.image_type,
-                cuis=r.cuis or [],
-                linked_images=[
-                    {
-                        "image_id": img.get("image_id"),
-                        "caption": img.get("caption"),
-                        "link_score": img.get("link_score")
-                    }
-                    for img in (r.linked_images or [])
-                ]
-            ))
+        # Convert to response model using helper function
+        items = [convert_to_result_item(r) for r in result.results]
         
         return SearchResponse(
             results=items,
@@ -143,17 +163,12 @@ async def quick_search(
             rerank=False
         )
         
-        items = [
-            SearchResultItem(
-                id=r.id,
-                content=r.content[:500],  # Truncate for quick results
-                score=r.score,
-                result_type=r.result_type,
-                page_number=r.page_number,
-                chunk_type=r.chunk_type
-            )
-            for r in result.results
-        ]
+        # Convert to response model, truncating content for quick results
+        items = []
+        for r in result.results:
+            item = convert_to_result_item(r)
+            item.content = item.content[:500]  # Truncate for quick results
+            items.append(item)
         
         return SearchResponse(
             results=items,
@@ -188,17 +203,8 @@ async def find_similar(
             top_k=k
         )
         
-        items = [
-            SearchResultItem(
-                id=r.id,
-                content=r.content,
-                score=r.score,
-                result_type=r.result_type,
-                page_number=r.page_number,
-                chunk_type=r.chunk_type
-            )
-            for r in results
-        ]
+        # Convert to response model
+        items = [convert_to_result_item(r) for r in results]
         
         return SearchResponse(
             results=items,

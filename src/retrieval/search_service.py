@@ -38,6 +38,7 @@ import time
 import numpy as np
 
 from src.retrieval.faiss_manager import FAISSManager
+from src.shared.models import SearchResult, ExtractedImage, ChunkType
 
 logger = logging.getLogger(__name__)
 
@@ -76,33 +77,11 @@ class SearchFilters:
         )
 
 
-@dataclass
-class SearchResult:
-    """Single search result."""
-    id: str
-    content: str
-    score: float
-    result_type: str = "chunk"  # chunk, image
-    
-    # Metadata
-    document_id: Optional[str] = None
-    page_number: Optional[int] = None
-    chunk_type: Optional[str] = None
-    specialty: Optional[str] = None
-    image_type: Optional[str] = None
-    
-    # UMLS
-    cuis: List[str] = field(default_factory=list)
-    
-    # Linked content
-    linked_images: List[Dict] = field(default_factory=list)
-    linked_chunks: List[Dict] = field(default_factory=list)
-    
-    # Scoring breakdown
-    faiss_score: float = 0.0
-    pgvector_score: float = 0.0
-    cui_score: float = 0.0
-    rerank_score: float = 0.0
+# SearchResult class imported from src.shared.models (lines 827-843)
+# This provides synthesis-compatible structure with:
+#   - chunk_id, document_title, authority_score, entity_names
+#   - images: List[ExtractedImage] (not Dict)
+#   - semantic_score, keyword_score, final_score
 
 
 @dataclass
@@ -333,20 +312,24 @@ class SearchService:
             # Fetch chunks
             chunk_results = await self._fetch_chunks(candidate_ids, filters)
             for chunk in chunk_results:
-                chunk.faiss_score = scores.get(chunk.id, 0)
-                chunk.score = chunk.faiss_score
+                # FIXED: Use chunk_id (not id) and update semantic/final scores
+                faiss_score = scores.get(chunk.chunk_id, 0.0)
+                chunk.semantic_score = faiss_score
+                chunk.final_score = faiss_score  # Will be updated by reranking/CUI boost
                 results.append(chunk)
         
         if mode in ("image", "hybrid"):
             # Fetch images
             image_results = await self._fetch_images(candidate_ids, filters)
             for img in image_results:
-                img.faiss_score = scores.get(img.id, 0)
-                img.score = img.faiss_score
+                # FIXED: Use chunk_id for consistency (images also use SearchResult)
+                faiss_score = scores.get(img.chunk_id, 0.0)
+                img.semantic_score = faiss_score
+                img.final_score = faiss_score
                 results.append(img)
         
-        # Sort by score
-        results.sort(key=lambda x: x.score, reverse=True)
+        # Sort by final_score (synthesis-compatible)
+        results.sort(key=lambda x: x.final_score, reverse=True)
         
         return results
     
@@ -390,30 +373,60 @@ class SearchService:
             param_idx += 2
         
         where_clause = " AND ".join(conditions)
-        
+
+        # FIXED: JOIN documents table for authority_score and document_title
+        # SELECT metadata for entity_names extraction
         query = f"""
-            SELECT id, document_id, content, page_number, 
-                   chunk_type, specialty, cuis
-            FROM chunks
+            SELECT
+                c.id,
+                c.document_id,
+                c.content,
+                c.page_number,
+                c.chunk_type,
+                c.specialty,
+                c.cuis,
+                c.metadata,
+                d.title AS document_title,
+                COALESCE(d.authority_score, 1.0) AS authority_score
+            FROM chunks c
+            JOIN documents d ON c.document_id = d.id
             WHERE {where_clause}
         """
-        
+
         rows = await self.db.fetch(query, *params)
-        
+
         results = []
         for row in rows:
+            row_id = str(row['id'])
+            metadata = row.get('metadata', {}) or {}
+
+            # Parse chunk_type string to ChunkType enum
+            chunk_type = ChunkType.GENERAL
+            if row.get('chunk_type'):
+                try:
+                    chunk_type = ChunkType[row['chunk_type'].upper()]
+                except (KeyError, ValueError):
+                    # If conversion fails, default to GENERAL
+                    pass
+
+            # FIXED: Populate synthesis-compatible SearchResult
             results.append(SearchResult(
-                id=str(row['id']),
-                content=row['content'],
-                score=0,  # Will be set later
-                result_type="chunk",
+                chunk_id=row_id,  # FIXED: chunk_id not id
                 document_id=str(row['document_id']),
-                page_number=row.get('page_number'),
-                chunk_type=row.get('chunk_type'),
-                specialty=row.get('specialty'),
-                cuis=row.get('cuis', [])
+                content=row['content'],
+                title=metadata.get('title', ''),  # Section title from metadata
+                chunk_type=chunk_type,  # FIXED: Enum not string
+                page_start=row.get('page_number', 0),  # FIXED: page_start not page_number
+                entity_names=metadata.get('entity_names', []),  # FIXED: From metadata
+                image_ids=metadata.get('image_ids', []),
+                authority_score=float(row['authority_score']),  # FIXED: From JOIN
+                keyword_score=0.0,  # TODO: Implement BM25 scoring
+                semantic_score=0.0,  # Will be set from FAISS scores
+                final_score=0.0,  # Will be computed from weighted scores
+                document_title=row.get('document_title'),  # FIXED: From JOIN
+                images=[]  # Will be populated by _attach_linked_images()
             ))
-        
+
         return results
     
     async def _fetch_images(
@@ -479,19 +492,19 @@ class SearchService:
         results: List[SearchResult],
         query_cuis: List[str]
     ) -> List[SearchResult]:
-        """Boost scores for results with matching CUIs."""
+        """Boost final_score for results with matching CUIs."""
         query_cuis_set = set(query_cuis)
-        
+
         for result in results:
             if result.cuis:
                 overlap = len(set(result.cuis) & query_cuis_set)
                 if overlap > 0:
                     boost = 1 + (self.cui_boost - 1) * min(overlap / len(query_cuis), 1.0)
-                    result.cui_score = overlap
-                    result.score *= boost
-        
-        # Re-sort
-        results.sort(key=lambda x: x.score, reverse=True)
+                    # FIXED: Update final_score (cui_score field doesn't exist in shared model)
+                    result.final_score *= boost
+
+        # Re-sort by final_score
+        results.sort(key=lambda x: x.final_score, reverse=True)
         return results
     
     async def _rerank_results(
@@ -509,13 +522,14 @@ class SearchService:
         # Get re-ranked scores
         scores = await self.reranker.score(query, texts)
         
-        # Update scores
+        # Update scores with reranking results
         for result, score in zip(results, scores):
-            result.rerank_score = score
-            result.score = score  # Replace with rerank score
-        
-        # Re-sort
-        results.sort(key=lambda x: x.score, reverse=True)
+            # FIXED: Update final_score to be weighted combination
+            # Reranking score should override or combine with semantic score
+            result.final_score = score  # Replace with rerank score
+
+        # Re-sort by final_score
+        results.sort(key=lambda x: x.final_score, reverse=True)
         return results
     
     # =========================================================================
@@ -526,53 +540,77 @@ class SearchService:
         self,
         results: List[SearchResult]
     ) -> List[SearchResult]:
-        """Attach linked images to chunk results."""
-        chunk_ids = [
-            UUID(r.id) for r in results 
-            if r.result_type == "chunk"
-        ]
-        
+        """
+        Attach linked images to chunk results as ExtractedImage objects.
+
+        FIXED: Returns List[ExtractedImage] instead of List[Dict] for synthesis compatibility.
+        """
+        if not results:
+            return results
+
+        # Get chunk_ids (all results are chunks in synthesis context)
+        chunk_ids = [UUID(r.chunk_id) for r in results]
+
         if not chunk_ids:
             return results
-        
-        # Fetch links
+
+        # FIXED: Fetch more image fields for ExtractedImage construction
         query = """
-            SELECT 
+            SELECT
                 l.chunk_id,
-                l.image_id,
-                l.score as link_score,
+                l.score AS link_score,
+                i.id,
+                i.document_id,
                 i.file_path,
+                i.page_number,
+                i.caption,
                 i.vlm_caption,
-                i.image_type
-            FROM links l
+                i.image_type,
+                i.width,
+                i.height,
+                i.format,
+                i.content_hash
+            FROM chunk_image_links l
             JOIN images i ON l.image_id = i.id
             WHERE l.chunk_id = ANY($1) AND l.score >= 0.5
             ORDER BY l.chunk_id, l.score DESC
         """
-        
+
         rows = await self.db.fetch(query, chunk_ids)
-        
-        # Group by chunk
-        links_by_chunk = {}
+
+        # Group images by chunk_id
+        images_by_chunk = {}
         for row in rows:
             chunk_id = str(row['chunk_id'])
-            if chunk_id not in links_by_chunk:
-                links_by_chunk[chunk_id] = []
-            
-            if len(links_by_chunk[chunk_id]) < self.max_linked_images:
-                links_by_chunk[chunk_id].append({
-                    'image_id': str(row['image_id']),
-                    'file_path': row['file_path'],
-                    'caption': row['vlm_caption'],
-                    'image_type': row['image_type'],
-                    'link_score': row['link_score']
-                })
-        
+            if chunk_id not in images_by_chunk:
+                images_by_chunk[chunk_id] = []
+
+            # FIXED: Create ExtractedImage objects (not Dict)
+            img_obj = ExtractedImage(
+                id=str(row['id']),
+                document_id=str(row['document_id']),
+                file_path=row['file_path'],
+                page_number=row.get('page_number', 0),
+                width=row.get('width', 0),
+                height=row.get('height', 0),
+                format=row.get('format', 'JPEG'),
+                content_hash=row.get('content_hash', ''),
+                caption=row.get('caption', ''),
+                vlm_caption=row.get('vlm_caption', ''),
+                image_type=row.get('image_type', 'unknown'),
+                # Store link score in metadata for potential later use
+                metadata={"link_score": float(row['link_score'])}
+            )
+
+            # Limit to max 3 images per chunk
+            if len(images_by_chunk[chunk_id]) < self.max_linked_images:
+                images_by_chunk[chunk_id].append(img_obj)
+
         # Attach to results
         for result in results:
-            if result.result_type == "chunk" and result.id in links_by_chunk:
-                result.linked_images = links_by_chunk[result.id]
-        
+            if result.chunk_id in images_by_chunk:
+                result.images = images_by_chunk[result.chunk_id]  # FIXED: .images not .linked_images
+
         return results
     
     # =========================================================================

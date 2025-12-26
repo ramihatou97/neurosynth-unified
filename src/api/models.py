@@ -74,20 +74,54 @@ class SearchRequest(BaseModel):
 
 
 class SearchResultItem(BaseModel):
-    """Single search result."""
-    id: str
+    """
+    Single search result (API response model).
+
+    Updated to match shared.models.SearchResult for synthesis compatibility.
+    Maintains backward compatibility by keeping legacy field names as aliases.
+    """
+    # Core identification
+    chunk_id: str
+    document_id: str
     content: str
-    score: float
-    result_type: str = "chunk"
-    
-    document_id: Optional[str] = None
-    page_number: Optional[int] = None
-    chunk_type: Optional[str] = None
-    specialty: Optional[str] = None
-    image_type: Optional[str] = None
+
+    # Metadata
+    title: str = ""
+    chunk_type: str  # Serialized from enum
+    page_start: int
+    entity_names: List[str] = Field(default_factory=list)
+    image_ids: List[str] = Field(default_factory=list)
+
+    # Authority and scores
+    authority_score: float = 1.0
+    keyword_score: float = 0.0
+    semantic_score: float = 0.0
+    final_score: float = 0.0
+
+    # Document info
+    document_title: Optional[str] = None
+
+    # Medical terminology
     cuis: List[str] = Field(default_factory=list)
-    
-    linked_images: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # Linked content (for API response)
+    images: List[Dict[str, Any]] = Field(default_factory=list)  # Serialized ExtractedImage objects
+
+    # Backward compatibility aliases
+    @property
+    def id(self) -> str:
+        """Alias for chunk_id (backward compatibility)."""
+        return self.chunk_id
+
+    @property
+    def page_number(self) -> int:
+        """Alias for page_start (backward compatibility)."""
+        return self.page_start
+
+    @property
+    def score(self) -> float:
+        """Alias for final_score (backward compatibility)."""
+        return self.final_score
 
 
 class SearchResponse(BaseModel):
