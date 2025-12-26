@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.synthesis.pdf_generator import MedicalPDFGenerator
 
 def main():
-    # Load synthesis JSON
-    input_file = Path("synthesis_for_pdf.json")
+    # Load synthesis JSON (sample data in examples/)
+    input_file = Path(__file__).parent.parent / "examples" / "sample_synthesis.json"
 
     if not input_file.exists():
         print(f"❌ File not found: {input_file}")
