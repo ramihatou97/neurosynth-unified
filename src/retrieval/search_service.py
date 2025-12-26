@@ -318,15 +318,12 @@ class SearchService:
                 chunk.final_score = faiss_score  # Will be updated by reranking/CUI boost
                 results.append(chunk)
         
-        if mode in ("image", "hybrid"):
-            # Fetch images
-            image_results = await self._fetch_images(candidate_ids, filters)
-            for img in image_results:
-                # FIXED: Use chunk_id for consistency (images also use SearchResult)
-                faiss_score = scores.get(img.chunk_id, 0.0)
-                img.semantic_score = faiss_score
-                img.final_score = faiss_score
-                results.append(img)
+        # NOTE: Image-only search temporarily disabled for synthesis compatibility
+        # Images are attached to chunks via _attach_linked_images() instead
+        # TODO: Implement separate ImageSearchResult type for image-only searches
+        # if mode in ("image", "hybrid"):
+        #     image_results = await self._fetch_images(candidate_ids, filters)
+        #     results.extend(image_results)
         
         # Sort by final_score (synthesis-compatible)
         results.sort(key=lambda x: x.final_score, reverse=True)
@@ -419,6 +416,7 @@ class SearchService:
                 page_start=row.get('page_number', 0),  # FIXED: page_start not page_number
                 entity_names=metadata.get('entity_names', []),  # FIXED: From metadata
                 image_ids=metadata.get('image_ids', []),
+                cuis=row.get('cuis', []),  # FIXED: Add cuis parameter
                 authority_score=float(row['authority_score']),  # FIXED: From JOIN
                 keyword_score=0.0,  # TODO: Implement BM25 scoring
                 semantic_score=0.0,  # Will be set from FAISS scores
@@ -563,14 +561,14 @@ class SearchService:
                 i.document_id,
                 i.file_path,
                 i.page_number,
-                i.caption,
+                i.vlm_caption AS caption,
                 i.vlm_caption,
                 i.image_type,
                 i.width,
                 i.height,
                 i.format,
                 i.content_hash
-            FROM chunk_image_links l
+            FROM links l
             JOIN images i ON l.image_id = i.id
             WHERE l.chunk_id = ANY($1) AND l.score >= 0.5
             ORDER BY l.chunk_id, l.score DESC

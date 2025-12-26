@@ -839,6 +839,7 @@ class SearchResult:
     semantic_score: float
     final_score: float
     document_title: Optional[str] = None
+    cuis: List[str] = field(default_factory=list)  # UMLS Concept Unique Identifiers
     images: List[ExtractedImage] = field(default_factory=list)
 
 
