@@ -141,6 +141,9 @@ output/
 exports/
 *.pdf
 *.docx
+synthesis_output.md
+synthesis_with_images.json
+output_with_images.pdf
 
 # =============================================================================
 # Model Artifacts

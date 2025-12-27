@@ -87,10 +87,11 @@ class PDFConfig:
     accent_color: colors.Color = colors.HexColor("#14b8a6")
     text_color: colors.Color = colors.HexColor("#1a1a2e")
     muted_color: colors.Color = colors.HexColor("#666666")
-    pearl_bg: colors.Color = colors.HexColor("#d4edda")
-    pearl_border: colors.Color = colors.HexColor("#28a745")
-    hazard_bg: colors.Color = colors.HexColor("#f8d7da")
-    hazard_border: colors.Color = colors.HexColor("#dc3545")
+    # Calm medical palette - professional, soothing, accessible
+    pearl_bg: colors.Color = colors.HexColor("#f0f7f4")       # whisper sage
+    pearl_border: colors.Color = colors.HexColor("#5a9a7c")   # muted teal
+    hazard_bg: colors.Color = colors.HexColor("#fef9f0")      # warm cream
+    hazard_border: colors.Color = colors.HexColor("#c4935a")  # amber/bronze
     
     # Images
     max_image_width: float = 5.5 * inch
@@ -152,29 +153,25 @@ class ClinicalCallout(Flowable):
         if self.callout_type == "pearl":
             bg_color = self.config.pearl_bg
             border_color = self.config.pearl_border
-            icon = "💡"
-            label = "PEARL"
+            label = "Pearl"
         else:
             bg_color = self.config.hazard_bg
             border_color = self.config.hazard_border
-            icon = "⚠️"
-            label = "HAZARD"
-        
-        # Draw background
+            label = "Caution"
+
+        # Draw subtle background with soft corners
         c.setFillColor(bg_color)
+        c.roundRect(0, 0, self.width, self.height, 6, fill=1, stroke=0)
+
+        # Draw subtle left accent border
         c.setStrokeColor(border_color)
-        c.setLineWidth(3)
-        c.roundRect(0, 0, self.width, self.height, 4, fill=1, stroke=0)
-        
-        # Draw left border
-        c.setStrokeColor(border_color)
-        c.setLineWidth(4)
+        c.setLineWidth(2)
         c.line(2, 0, 2, self.height)
-        
-        # Draw label
-        c.setFillColor(border_color)
-        c.setFont(self.config.heading_font, 10)
-        c.drawString(12, self.height - 16, f"{label}:")
+
+        # Draw label in discreet italic
+        c.setFillColor(self.config.muted_color)
+        c.setFont("Times-Italic", 9)
+        c.drawString(12, self.height - 15, f"{label}:")
         
         # Draw text
         c.setFillColor(self.config.text_color)
@@ -505,9 +502,7 @@ class MedicalPDFGenerator:
                 textColor=self.config.primary_color,
                 spaceBefore=0.3 * inch,
                 spaceAfter=0.15 * inch,
-                borderWidth=1,
-                borderColor=self.config.accent_color,
-                borderPadding=(0, 0, 4, 0)
+                # Clean appearance - no border
             ),
             'Heading2': ParagraphStyle(
                 'Heading2',
@@ -611,7 +606,7 @@ class MedicalPDFGenerator:
         # Abstract
         abstract = synthesis_data.get('abstract', '')
         if abstract:
-            story.append(Paragraph("Abstract", self.styles['Heading1']))
+            story.append(Paragraph("Introduction", self.styles['Heading1']))
             story.append(Paragraph(abstract, self.styles['Abstract']))
             story.append(Spacer(1, 0.2 * inch))
         

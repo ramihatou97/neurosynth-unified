@@ -342,19 +342,20 @@ class ContextAssembler:
         
         for chunk, citation in zip(chunks, citations):
             content = getattr(chunk, 'content', '')
-            
+
             if self.include_metadata:
                 meta_parts = []
                 if citation.chunk_type:
-                    meta_parts.append(citation.chunk_type)
+                    ct = citation.chunk_type
+                    meta_parts.append(ct.value if hasattr(ct, 'value') else str(ct))
                 if citation.page_number:
                     meta_parts.append(f"p.{citation.page_number}")
-                
+
                 if meta_parts:
                     meta_str = f" ({', '.join(meta_parts)})"
                 else:
                     meta_str = ""
-                
+
                 parts.append(f"[{citation.index}]{meta_str} {content}")
             else:
                 parts.append(f"[{citation.index}] {content}")
@@ -375,7 +376,9 @@ class ContextAssembler:
             attrs = [f'id="{citation.index}"']
             if self.include_metadata:
                 if citation.chunk_type:
-                    attrs.append(f'type="{citation.chunk_type}"')
+                    ct = citation.chunk_type
+                    ct_str = ct.value if hasattr(ct, 'value') else str(ct)
+                    attrs.append(f'type="{ct_str}"')
                 if citation.page_number:
                     attrs.append(f'page="{citation.page_number}"')
             
@@ -399,7 +402,8 @@ class ContextAssembler:
             if self.include_metadata:
                 meta_parts = []
                 if citation.chunk_type:
-                    meta_parts.append(citation.chunk_type)
+                    ct = citation.chunk_type
+                    meta_parts.append(ct.value if hasattr(ct, 'value') else str(ct))
                 if citation.page_number:
                     meta_parts.append(f"Page {citation.page_number}")
                 if meta_parts:

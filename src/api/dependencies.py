@@ -24,10 +24,10 @@ logger = logging.getLogger(__name__)
 class Settings:
     """Application settings from environment."""
     
-    # Database
+    # Database (asyncpg requires plain postgresql:// scheme)
     database_url: str = os.getenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://neurosynth:neurosynth@localhost:5432/neurosynth"
+        "postgresql://neurosynth:neurosynth@localhost:5432/neurosynth"
     )
     db_min_connections: int = int(os.getenv("DB_MIN_CONNECTIONS", "2"))
     db_max_connections: int = int(os.getenv("DB_MAX_CONNECTIONS", "10"))

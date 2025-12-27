@@ -6,10 +6,13 @@ Main FastAPI application with all routes and middleware.
 
 Run with:
     uvicorn src.api.main:app --reload
-    
+
 Or:
     python -m src.api.main
 """
+
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file before anything else
 
 import logging
 from contextlib import asynccontextmanager
@@ -29,7 +32,8 @@ from src.api.routes import (
     rag_router,
     documents_router,
     health_router,
-    synthesis_router
+    synthesis_router,
+    ingest_router
 )
 from src.api.routes.images import router as images_router
 
@@ -126,6 +130,7 @@ Currently open access. Production deployments should add authentication.
     app.include_router(search_router, prefix="/api/v1")
     app.include_router(rag_router, prefix="/api/v1")
     app.include_router(documents_router, prefix="/api/v1")
+    app.include_router(ingest_router)  # Has /api/v1/ingest prefix
     app.include_router(synthesis_router)
     app.include_router(images_router)  # Image serving with security
     

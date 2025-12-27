@@ -6,7 +6,7 @@ Document management API endpoints.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
@@ -338,9 +338,103 @@ async def delete_document(
             "status": "deleted" if deleted else "not_found",
             "document_id": document_id
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"Delete document error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Delete Chunks
+# =============================================================================
+
+@router.delete(
+    "/{document_id}/chunks",
+    summary="Delete document chunks",
+    description="Delete all chunks for a document, or specific chunks by ID"
+)
+async def delete_document_chunks(
+    document_id: str = Path(..., description="Document UUID"),
+    chunk_ids: Optional[List[str]] = Query(None, description="Specific chunk IDs to delete"),
+    repos = Depends(get_repositories)
+):
+    """Delete chunks - all if no IDs specified, or specific IDs."""
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    try:
+        exists = await repos.documents.exists(doc_uuid)
+        if not exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not found: {document_id}"
+            )
+
+        if chunk_ids:
+            # Delete specific chunks
+            chunk_uuids = [UUID(cid) for cid in chunk_ids]
+            count = await repos.chunks.delete_many(chunk_uuids)
+        else:
+            # Delete all chunks for document
+            count = await repos.chunks.delete_by_document(doc_uuid)
+
+        return {"deleted": count, "document_id": document_id}
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid chunk ID format: {e}")
+    except Exception as e:
+        logger.exception(f"Delete chunks error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Delete Images
+# =============================================================================
+
+@router.delete(
+    "/{document_id}/images",
+    summary="Delete document images",
+    description="Delete all images for a document, or specific images by ID"
+)
+async def delete_document_images(
+    document_id: str = Path(..., description="Document UUID"),
+    image_ids: Optional[List[str]] = Query(None, description="Specific image IDs to delete"),
+    repos = Depends(get_repositories)
+):
+    """Delete images - all if no IDs specified, or specific IDs."""
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    try:
+        exists = await repos.documents.exists(doc_uuid)
+        if not exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not found: {document_id}"
+            )
+
+        if image_ids:
+            # Delete specific images
+            image_uuids = [UUID(iid) for iid in image_ids]
+            count = await repos.images.delete_many(image_uuids)
+        else:
+            # Delete all images for document
+            count = await repos.images.delete_by_document(doc_uuid)
+
+        return {"deleted": count, "document_id": document_id}
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image ID format: {e}")
+    except Exception as e:
+        logger.exception(f"Delete images error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

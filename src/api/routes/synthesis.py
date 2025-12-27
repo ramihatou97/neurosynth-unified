@@ -12,10 +12,16 @@ Mount in src/api/main.py:
 """
 
 import asyncio
+import json
 import logging
-from typing import Optional, List
+import os
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, List, Literal
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.synthesis.engine import (
@@ -103,6 +109,27 @@ class TemplateInfo(BaseModel):
     min_figures: int
 
 
+class ExportRequest(BaseModel):
+    """Request model for export."""
+    synthesis_id: Optional[str] = None
+    topic: Optional[str] = None
+    template_type: str = "PROCEDURAL"
+    format: Literal["pdf", "html", "docx", "markdown"] = "pdf"
+    author: str = "NeuroSynth"
+    image_quality: Literal["high", "medium", "low"] = "high"
+    include_toc: bool = True
+    include_abstract: bool = True
+    include_references: bool = True
+
+
+class SynthesisProgress(BaseModel):
+    """Progress update for streaming."""
+    stage: str
+    progress: float
+    message: str
+    section: Optional[str] = None
+
+
 # =============================================================================
 # SINGLETON ENGINE
 # =============================================================================
@@ -158,6 +185,24 @@ async def get_synthesis_engine(container) -> SynthesisEngine:
     
     logger.info("SynthesisEngine initialized")
     return _synthesis_engine
+
+
+async def get_exporter():
+    """Get synthesis exporter instance."""
+    from src.synthesis.export import SynthesisExporter, ExportConfig
+
+    config = ExportConfig()
+    return SynthesisExporter(
+        image_base_path=Path(os.getenv("IMAGE_BASE_PATH", "data/images")),
+        config=config
+    )
+
+
+def _sse_event(data) -> str:
+    """Format data as Server-Sent Event."""
+    if isinstance(data, BaseModel):
+        data = data.model_dump()
+    return f"data: {json.dumps(data)}\n\n"
 
 
 # =============================================================================
@@ -329,3 +374,357 @@ async def synthesis_health():
         "engine_initialized": _synthesis_engine is not None,
         "verification_available": _synthesis_engine.has_verification if _synthesis_engine else False,
     }
+
+
+# =============================================================================
+# STREAMING SYNTHESIS
+# =============================================================================
+
+@router.post("/generate/stream")
+async def generate_synthesis_stream(request: SynthesisRequest):
+    """
+    Generate synthesis with streaming progress updates.
+
+    Returns Server-Sent Events with progress updates and final result.
+    """
+    from src.api.dependencies import ServiceContainer
+
+    async def event_generator():
+        try:
+            # Initialize
+            container = ServiceContainer()
+            await container.initialize()
+
+            # Stage 1: Search
+            yield _sse_event(SynthesisProgress(
+                stage="search",
+                progress=10,
+                message="Searching knowledge base..."
+            ))
+
+            try:
+                template_type = TemplateType[request.template_type.upper()]
+            except KeyError:
+                yield _sse_event({
+                    "stage": "error",
+                    "progress": 0,
+                    "message": f"Invalid template_type: {request.template_type}"
+                })
+                return
+
+            search_response = await container.search.search(
+                query=request.topic,
+                mode="hybrid",
+                top_k=request.max_chunks,
+                include_images=True
+            )
+
+            if not search_response.results:
+                yield _sse_event({
+                    "stage": "error",
+                    "progress": 0,
+                    "message": f"No relevant content found for: {request.topic}"
+                })
+                return
+
+            yield _sse_event(SynthesisProgress(
+                stage="search",
+                progress=20,
+                message=f"Found {len(search_response.results)} relevant chunks"
+            ))
+
+            # Stage 2: Context preparation
+            yield _sse_event(SynthesisProgress(
+                stage="prepare",
+                progress=30,
+                message="Preparing context..."
+            ))
+
+            # Stage 3: Generation
+            engine = await get_synthesis_engine(container)
+
+            result = await asyncio.wait_for(
+                engine.synthesize(
+                    topic=request.topic,
+                    template_type=template_type,
+                    search_results=search_response.results,
+                    include_verification=request.include_verification,
+                    include_figures=request.include_figures
+                ),
+                timeout=SYNTHESIS_TIMEOUT_SECONDS
+            )
+
+            # Report sections generated
+            for i, section in enumerate(result.sections):
+                progress = 40 + (i / max(len(result.sections), 1)) * 40
+                yield _sse_event(SynthesisProgress(
+                    stage="generate",
+                    progress=progress,
+                    message=f"Generated: {section.title}",
+                    section=section.title
+                ))
+
+            # Stage 4: Figure resolution
+            yield _sse_event(SynthesisProgress(
+                stage="figures",
+                progress=85,
+                message=f"Resolving {len(result.figure_requests)} figures..."
+            ))
+
+            # Stage 5: Finalization
+            yield _sse_event(SynthesisProgress(
+                stage="finalize",
+                progress=95,
+                message="Finalizing synthesis..."
+            ))
+
+            # Final result
+            yield _sse_event({
+                "stage": "complete",
+                "progress": 100,
+                "result": {
+                    "title": result.title,
+                    "abstract": result.abstract,
+                    "sections": [
+                        {
+                            "title": s.title,
+                            "content": s.content,
+                            "level": s.level,
+                            "sources": s.sources,
+                            "figures": s.figures,
+                            "word_count": s.word_count
+                        }
+                        for s in result.sections
+                    ],
+                    "resolved_figures": result.resolved_figures,
+                    "total_words": result.total_words,
+                    "total_figures": result.total_figures,
+                    "total_citations": result.total_citations,
+                    "synthesis_time_ms": result.synthesis_time_ms
+                }
+            })
+
+        except asyncio.TimeoutError:
+            yield _sse_event({
+                "stage": "error",
+                "progress": 0,
+                "message": f"Synthesis timed out after {SYNTHESIS_TIMEOUT_SECONDS} seconds"
+            })
+        except Exception as e:
+            logger.exception("Streaming synthesis failed")
+            yield _sse_event({
+                "stage": "error",
+                "progress": 0,
+                "message": str(e)
+            })
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )
+
+
+# =============================================================================
+# EXPORT ENDPOINTS
+# =============================================================================
+
+@router.post("/export/pdf")
+async def export_synthesis_pdf(
+    request: ExportRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Export synthesis to PDF.
+
+    Returns PDF file with:
+    - Professional typesetting (ReportLab)
+    - Embedded images (native, not base64)
+    - Table of contents
+    - Clinical callouts (pearl/hazard boxes)
+    - Figure captions and references
+    """
+    from src.synthesis.export import SynthesisExporter, ExportConfig
+    from src.api.dependencies import ServiceContainer
+
+    if not request.topic:
+        raise HTTPException(status_code=400, detail="Topic required for synthesis")
+
+    # Generate synthesis first
+    synth_request = SynthesisRequest(
+        topic=request.topic,
+        template_type=request.template_type,
+        include_figures=True
+    )
+
+    synthesis = await generate_synthesis(synth_request)
+
+    # Configure exporter
+    config = ExportConfig(
+        title=synthesis.title,
+        author=request.author,
+        image_quality=request.image_quality,
+        include_toc=request.include_toc,
+        include_abstract=request.include_abstract,
+        include_references=request.include_references
+    )
+
+    exporter = SynthesisExporter(
+        image_base_path=Path(os.getenv("IMAGE_BASE_PATH", "data/images")),
+        config=config
+    )
+
+    # Create temp file
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        output_path = Path(tmp.name)
+
+    # Generate PDF
+    synthesis_dict = synthesis.model_dump()
+    exporter.to_pdf(synthesis_dict, output_path)
+
+    # Schedule cleanup
+    def cleanup():
+        try:
+            os.unlink(output_path)
+        except Exception:
+            pass
+
+    background_tasks.add_task(cleanup)
+
+    # Return file
+    filename = f"{synthesis.title[:50].replace(' ', '_')}.pdf"
+
+    return FileResponse(
+        path=output_path,
+        filename=filename,
+        media_type="application/pdf"
+    )
+
+
+@router.post("/export/html")
+async def export_synthesis_html(request: ExportRequest):
+    """Export synthesis to self-contained HTML with embedded images."""
+    from src.synthesis.export import SynthesisExporter, ExportConfig
+
+    if not request.topic:
+        raise HTTPException(status_code=400, detail="Topic required")
+
+    # Generate synthesis
+    synth_request = SynthesisRequest(
+        topic=request.topic,
+        template_type=request.template_type,
+        include_figures=True
+    )
+
+    synthesis = await generate_synthesis(synth_request)
+
+    # Configure and export
+    config = ExportConfig(
+        title=synthesis.title,
+        author=request.author,
+        include_toc=request.include_toc,
+        include_abstract=request.include_abstract,
+        include_references=request.include_references
+    )
+
+    exporter = SynthesisExporter(
+        image_base_path=Path(os.getenv("IMAGE_BASE_PATH", "data/images")),
+        config=config
+    )
+
+    html = exporter.to_html(synthesis.model_dump(), embed_images=True)
+
+    return StreamingResponse(
+        iter([html]),
+        media_type="text/html",
+        headers={
+            "Content-Disposition": f'attachment; filename="{synthesis.title[:50]}.html"'
+        }
+    )
+
+
+@router.post("/export/docx")
+async def export_synthesis_docx(
+    request: ExportRequest,
+    background_tasks: BackgroundTasks
+):
+    """Export synthesis to Microsoft Word document."""
+    from src.synthesis.export import SynthesisExporter, ExportConfig
+
+    if not request.topic:
+        raise HTTPException(status_code=400, detail="Topic required")
+
+    # Generate synthesis
+    synth_request = SynthesisRequest(
+        topic=request.topic,
+        template_type=request.template_type,
+        include_figures=True
+    )
+
+    synthesis = await generate_synthesis(synth_request)
+
+    # Configure and export
+    config = ExportConfig(
+        title=synthesis.title,
+        author=request.author
+    )
+
+    exporter = SynthesisExporter(
+        image_base_path=Path(os.getenv("IMAGE_BASE_PATH", "data/images")),
+        config=config
+    )
+
+    # Create temp file
+    with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+        output_path = Path(tmp.name)
+
+    exporter.to_docx(synthesis.model_dump(), output_path)
+
+    # Schedule cleanup
+    background_tasks.add_task(lambda: os.unlink(output_path))
+
+    filename = f"{synthesis.title[:50].replace(' ', '_')}.docx"
+
+    return FileResponse(
+        path=output_path,
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+
+@router.post("/export/markdown")
+async def export_synthesis_markdown(request: ExportRequest):
+    """Export synthesis to Markdown with resolved figure links."""
+    from src.synthesis.export import SynthesisExporter, ExportConfig
+
+    if not request.topic:
+        raise HTTPException(status_code=400, detail="Topic required")
+
+    # Generate synthesis
+    synth_request = SynthesisRequest(
+        topic=request.topic,
+        template_type=request.template_type,
+        include_figures=True
+    )
+
+    synthesis = await generate_synthesis(synth_request)
+
+    # Configure and export
+    config = ExportConfig(title=synthesis.title, author=request.author)
+    exporter = SynthesisExporter(
+        image_base_path=Path(os.getenv("IMAGE_BASE_PATH", "data/images")),
+        config=config
+    )
+
+    markdown = exporter.to_markdown(synthesis.model_dump())
+
+    return StreamingResponse(
+        iter([markdown]),
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="{synthesis.title[:50]}.md"'
+        }
+    )

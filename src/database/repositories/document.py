@@ -84,35 +84,36 @@ class DocumentRepository(BaseRepository):
     
     async def get_by_source_path(self, source_path: str) -> Optional[Dict[str, Any]]:
         """Find document by source file path."""
-        return await self.find_one_by({'source_path': source_path})
+        return await self.find_one_by({'file_path': source_path})
     
     async def get_with_stats(self, id: UUID) -> Optional[Dict[str, Any]]:
         """Get document with chunk and image statistics."""
         query = """
-            SELECT 
-                d.*,
-                COALESCE(cs.total_chunks, 0) as total_chunks,
-                COALESCE(cs.chunks_with_embedding, 0) as chunks_with_embedding,
-                COALESCE(cs.chunks_with_cuis, 0) as chunks_with_cuis,
-                COALESCE(is_.total_images, 0) as total_images,
-                COALESCE(is_.images_with_embedding, 0) as images_with_embedding,
-                COALESCE(is_.images_with_caption, 0) as images_with_caption
+            SELECT
+                d.id,
+                d.file_path as source_path,
+                d.title,
+                d.created_at,
+                d.updated_at,
+                (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as total_chunks,
+                (SELECT COUNT(*) FROM chunks WHERE document_id = d.id AND embedding IS NOT NULL) as chunks_with_embedding,
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id) as total_images,
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND image_embedding IS NOT NULL) as images_with_embedding,
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND caption IS NOT NULL) as images_with_caption
             FROM documents d
-            LEFT JOIN chunk_stats cs ON cs.document_id = d.id
-            LEFT JOIN image_stats is_ ON is_.document_id = d.id
             WHERE d.id = $1
         """
-        
+
         row = await self.db.fetchrow(query, id)
         if not row:
             return None
-        
+
         doc = self._to_entity(dict(row))
         doc['stats'] = {
             'chunks': {
                 'total': row.get('total_chunks', 0),
                 'with_embedding': row.get('chunks_with_embedding', 0),
-                'with_cuis': row.get('chunks_with_cuis', 0)
+                'with_cuis': 0
             },
             'images': {
                 'total': row.get('total_images', 0),
@@ -130,13 +131,13 @@ class DocumentRepository(BaseRepository):
     ) -> List[Dict[str, Any]]:
         """List documents with chunk and image counts."""
         query = """
-            SELECT 
+            SELECT
                 d.id,
-                d.source_path,
+                d.file_path as source_path,
                 d.title,
-                d.total_pages,
-                d.total_chunks,
-                d.total_images,
+                0 as total_pages,
+                (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as total_chunks,
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id) as total_images,
                 d.created_at,
                 d.updated_at
             FROM documents d

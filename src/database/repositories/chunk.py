@@ -41,17 +41,17 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             'document_id': row['document_id'],
             'content': row['content'],
             'content_hash': row.get('content_hash'),
-            'page_number': row.get('page_number'),
-            'chunk_index': row.get('chunk_index'),
-            'start_char': row.get('start_char'),
-            'end_char': row.get('end_char'),
+            'page_number': row.get('start_page'),
+            'chunk_index': row.get('sequence_in_doc'),
+            'start_char': row.get('char_offset_start'),
+            'end_char': row.get('char_offset_end'),
             'chunk_type': row.get('chunk_type'),
-            'specialty': row.get('specialty'),
-            'embedding': row.get('embedding'),  # numpy array from pgvector
-            'cuis': row.get('cuis', []),
-            'entities': row.get('entities', []),
+            'specialty': row.get('specialty_relevance', {}),
+            'embedding': row.get('embedding'),
+            'cuis': [],  # Not in current schema
+            'entities': row.get('entity_mentions', []),
             'created_at': row.get('created_at'),
-            'metadata': row.get('metadata', {}),
+            'metadata': {},
             # Search result fields
             'similarity': row.get('similarity'),
             'cui_overlap': row.get('cui_overlap'),
@@ -190,18 +190,18 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
     ) -> List[Dict[str, Any]]:
         """Get chunks for a document, optionally filtered by page."""
         columns = """
-            id, document_id, content, page_number, chunk_index,
-            chunk_type, specialty, cuis, entities, metadata
+            id, document_id, content, start_page, sequence_in_doc,
+            chunk_type, specialty_relevance, entity_mentions
         """
         if include_embedding:
             columns += ", embedding"
-        
+
         if page_number is not None:
             query = f"""
                 SELECT {columns}
                 FROM chunks
-                WHERE document_id = $1 AND page_number = $2
-                ORDER BY chunk_index
+                WHERE document_id = $1 AND start_page = $2
+                ORDER BY sequence_in_doc
             """
             rows = await self.db.fetch(query, document_id, page_number)
         else:
@@ -209,10 +209,10 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT {columns}
                 FROM chunks
                 WHERE document_id = $1
-                ORDER BY page_number, chunk_index
+                ORDER BY start_page, sequence_in_doc
             """
             rows = await self.db.fetch(query, document_id)
-        
+
         return [self._to_entity(dict(row)) for row in rows]
     
     async def get_by_type(
@@ -224,23 +224,23 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         """Get chunks by type (PROCEDURE, ANATOMY, etc.)."""
         if document_id:
             query = """
-                SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
+                SELECT id, document_id, content, start_page, chunk_type, specialty_relevance
                 FROM chunks
                 WHERE chunk_type = $1 AND document_id = $2
-                ORDER BY page_number, chunk_index
+                ORDER BY start_page, sequence_in_doc
                 LIMIT $3
             """
             rows = await self.db.fetch(query, chunk_type, document_id, limit)
         else:
             query = """
-                SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
+                SELECT id, document_id, content, start_page, chunk_type, specialty_relevance
                 FROM chunks
                 WHERE chunk_type = $1
                 ORDER BY created_at DESC
                 LIMIT $2
             """
             rows = await self.db.fetch(query, chunk_type, limit)
-        
+
         return [self._to_entity(dict(row)) for row in rows]
     
     async def get_by_specialty(
@@ -249,10 +249,11 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Get chunks by neurosurgery specialty."""
+        # specialty_relevance is JSONB, query checks if specialty key exists
         query = """
-            SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
+            SELECT id, document_id, content, start_page, chunk_type, specialty_relevance
             FROM chunks
-            WHERE specialty = $1
+            WHERE specialty_relevance ? $1
             ORDER BY created_at DESC
             LIMIT $2
         """
@@ -265,16 +266,10 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Get chunks containing a specific UMLS CUI."""
-        query = """
-            SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
-            FROM chunks
-            WHERE $1 = ANY(cuis)
-            ORDER BY created_at DESC
-            LIMIT $2
-        """
-        rows = await self.db.fetch(query, cui, limit)
-        return [self._to_entity(dict(row)) for row in rows]
-    
+        # Note: cuis column not in current schema - returning empty
+        logger.warning("get_by_cui: cuis column not in schema, returning empty")
+        return []
+
     async def get_by_cuis(
         self,
         cuis: List[str],
@@ -282,27 +277,9 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Get chunks containing specified CUIs."""
-        if match_all:
-            # All CUIs must be present
-            query = """
-                SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
-                FROM chunks
-                WHERE cuis @> $1
-                ORDER BY created_at DESC
-                LIMIT $2
-            """
-        else:
-            # Any CUI matches
-            query = """
-                SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
-                FROM chunks
-                WHERE cuis && $1
-                ORDER BY created_at DESC
-                LIMIT $2
-            """
-        
-        rows = await self.db.fetch(query, cuis, limit)
-        return [self._to_entity(dict(row)) for row in rows]
+        # Note: cuis column not in current schema - returning empty
+        logger.warning("get_by_cuis: cuis column not in schema, returning empty")
+        return []
     
     # =========================================================================
     # Search Operations
@@ -378,24 +355,24 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         """Get chunk statistics."""
         if document_id:
             query = """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE embedding IS NOT NULL) as with_embedding,
-                    COUNT(*) FILTER (WHERE array_length(cuis, 1) > 0) as with_cuis,
+                    0 as with_cuis,
                     COUNT(DISTINCT chunk_type) as unique_types,
-                    COUNT(DISTINCT specialty) as unique_specialties
+                    COUNT(DISTINCT specialty_relevance) as unique_specialties
                 FROM chunks
                 WHERE document_id = $1
             """
             row = await self.db.fetchrow(query, document_id)
         else:
             query = """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE embedding IS NOT NULL) as with_embedding,
-                    COUNT(*) FILTER (WHERE array_length(cuis, 1) > 0) as with_cuis,
+                    0 as with_cuis,
                     COUNT(DISTINCT chunk_type) as unique_types,
-                    COUNT(DISTINCT specialty) as unique_specialties
+                    COUNT(DISTINCT specialty_relevance) as unique_specialties
                 FROM chunks
             """
             row = await self.db.fetchrow(query)
@@ -427,3 +404,15 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             rows = await self.db.fetch(query)
         
         return {row['chunk_type']: row['count'] for row in rows}
+
+    # =========================================================================
+    # Delete Operations
+    # =========================================================================
+
+    async def delete_by_document(self, document_id: UUID) -> int:
+        """Delete all chunks for a document."""
+        query = "DELETE FROM chunks WHERE document_id = $1"
+        result = await self.db.execute(query, document_id)
+        count = int(result.split()[-1]) if result else 0
+        logger.info(f"Deleted {count} chunks for document {document_id}")
+        return count

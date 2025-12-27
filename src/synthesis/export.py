@@ -226,10 +226,10 @@ class HTMLGenerator:
         --text: #1a1a2e;
         --muted: #666;
         --bg: #fff;
-        --pearl-bg: #d4edda;
-        --pearl-border: #28a745;
-        --hazard-bg: #f8d7da;
-        --hazard-border: #dc3545;
+        --pearl-bg: #f0f7f4;
+        --pearl-border: #5a9a7c;
+        --hazard-bg: #fef9f0;
+        --hazard-border: #c4935a;
     }
     body {
         font-family: Georgia, 'Times New Roman', serif;
@@ -239,16 +239,16 @@ class HTMLGenerator:
         line-height: 1.7;
         color: var(--text);
     }
-    h1 { color: var(--primary); border-bottom: 2px solid var(--accent); padding-bottom: 10px; }
-    h2 { color: var(--primary); margin-top: 30px; border-bottom: 1px solid #ddd; }
-    .abstract { background: #f9f9f9; padding: 20px; border-left: 4px solid var(--accent); font-style: italic; }
+    h1 { color: var(--primary); padding-bottom: 10px; }
+    h2 { color: var(--primary); margin-top: 30px; }
+    .abstract { background: #f9f9f9; padding: 20px; border-left: 2px solid var(--accent); font-style: italic; }
     figure { margin: 30px 0; text-align: center; }
-    figure img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; }
+    figure img { max-width: 100%; border: 1px solid #ddd; border-radius: 6px; }
     figcaption { margin-top: 10px; font-size: 0.9em; color: var(--muted); }
-    .pearl { background: var(--pearl-bg); border-left: 4px solid var(--pearl-border); padding: 15px; margin: 20px 0; }
-    .pearl::before { content: "💡 PEARL: "; font-weight: bold; color: #155724; }
-    .hazard { background: var(--hazard-bg); border-left: 4px solid var(--hazard-border); padding: 15px; margin: 20px 0; }
-    .hazard::before { content: "⚠️ HAZARD: "; font-weight: bold; color: #721c24; }
+    .pearl { background: var(--pearl-bg); border-left: 2px solid var(--pearl-border); padding: 15px; margin: 20px 0; border-radius: 0 6px 6px 0; }
+    .pearl::before { content: "Pearl: "; font-style: italic; font-weight: normal; color: var(--muted); }
+    .hazard { background: var(--hazard-bg); border-left: 2px solid var(--hazard-border); padding: 15px; margin: 20px 0; border-radius: 0 6px 6px 0; }
+    .hazard::before { content: "Caution: "; font-style: italic; font-weight: normal; color: var(--muted); }
     .reference { font-size: 0.9em; color: var(--muted); margin: 5px 0; padding-left: 30px; text-indent: -30px; }
     .meta { text-align: center; color: var(--muted); margin-bottom: 30px; }
     .word-count { text-align: right; font-size: 0.85em; color: var(--muted); font-style: italic; }
