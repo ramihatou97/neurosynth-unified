@@ -8,19 +8,20 @@ Supports file export, database write, or both.
 Usage:
     from src.ingest.unified_pipeline import UnifiedPipeline
     from src.ingest.config import UnifiedPipelineConfig, OutputMode
-    
+
     # Database mode
     config = UnifiedPipelineConfig.for_database(
         connection_string="postgresql://..."
     )
-    
+
     pipeline = UnifiedPipeline(config)
     await pipeline.initialize()
-    
+
     result = await pipeline.process_document("/path/to/file.pdf")
-    
+
     await pipeline.close()
 """
+from __future__ import annotations
 
 import logging
 from typing import Optional, Dict, Any, Callable, List
@@ -147,44 +148,54 @@ class UnifiedPipeline:
         """Initialize pipeline components."""
         if self._initialized:
             return
-        
+
         logger.info(f"Initializing UnifiedPipeline (mode: {self.config.output_mode.value})")
-        
-        # Initialize Phase 1 pipeline
-        try:
-            from src.ingest.pipeline import NeuroIngestPipeline, PipelineConfig
-            
-            # Convert config
-            phase1_config = PipelineConfig(
-                output_dir=self.config.output_dir
-            )
-            
-            self._phase1_pipeline = NeuroIngestPipeline(
-                config=phase1_config,
-                enable_triage=self.config.triage.enabled,
-                enable_metrics=self.config.enable_metrics
-            )
-            
-            logger.info("Phase 1 pipeline initialized")
-            
-        except ImportError as e:
-            logger.error(f"Failed to import Phase 1 pipeline: {e}")
-            raise RuntimeError(
-                "Phase 1 pipeline not available. "
-                "Ensure src/ingest/pipeline.py is present."
-            )
-        
-        # Initialize database writer if needed
+
+        # Initialize database FIRST (needed for relation extraction pipeline)
+        database_for_pipeline = None
         if self.config.output_mode in (OutputMode.DATABASE, OutputMode.BOTH):
             self._db_writer = PipelineDatabaseWriter(
                 connection_string=self.config.database.connection_string,
                 export_files=(self.config.output_mode == OutputMode.BOTH),
                 export_dir=self.config.output_dir if self.config.output_mode == OutputMode.BOTH else None
             )
-            
+
             await self._db_writer.connect()
             logger.info("Database writer initialized")
-        
+
+            # Create NeuroDatabase for relation extraction pipeline
+            try:
+                from src.core.database import NeuroDatabase
+                database_for_pipeline = NeuroDatabase(pool=self._db_writer._db.pool)
+                logger.info("Database connection passed to pipeline for relation extraction")
+            except Exception as e:
+                logger.warning(f"Could not create NeuroDatabase for pipeline: {e}")
+
+        # Initialize Phase 1 pipeline (with database if available for relation extraction)
+        try:
+            from src.ingest.pipeline import NeuroIngestPipeline, PipelineConfig
+
+            # Convert config
+            phase1_config = PipelineConfig(
+                output_dir=self.config.output_dir
+            )
+
+            self._phase1_pipeline = NeuroIngestPipeline(
+                config=phase1_config,
+                database=database_for_pipeline,  # Pass database for relation extraction
+                enable_triage=self.config.triage.enabled,
+                enable_metrics=self.config.enable_metrics
+            )
+
+            logger.info(f"Phase 1 pipeline initialized" + (" with relation extraction" if database_for_pipeline else ""))
+
+        except ImportError as e:
+            logger.error(f"Failed to import Phase 1 pipeline: {e}")
+            raise RuntimeError(
+                "Phase 1 pipeline not available. "
+                "Ensure src/ingest/pipeline.py is present."
+            )
+
         self._initialized = True
         logger.info("UnifiedPipeline initialization complete")
     
@@ -231,12 +242,23 @@ class UnifiedPipeline:
                 logger.info(f"[{stage}] {current}/{total} {message}")
         
         try:
-            # Step 1: Phase 1 extraction
-            report_progress("extraction", 0, 1, "Starting Phase 1 extraction...")
-            
-            phase1_result = await self._phase1_pipeline.process_document(str(pdf_path))
-            
-            report_progress("extraction", 1, 1, "Extraction complete")
+            # Step 1: Phase 1 extraction with progress forwarding
+            report_progress("extraction", 0, 100, "Starting Phase 1 extraction...")
+
+            # Create wrapper to forward Phase 1 ProgressInfo to our callback
+            def phase1_progress(info):
+                """Forward Phase 1 ProgressInfo to our progress callback."""
+                stage_name = info.stage.value if hasattr(info.stage, 'value') else str(info.stage)
+                overall = int(info.overall_progress * 100) if hasattr(info, 'overall_progress') else 0
+                message = getattr(info, 'message', '') or f"Processing {stage_name}..."
+                report_progress(stage_name, overall, 100, message)
+
+            phase1_result = await self._phase1_pipeline.process_document(
+                str(pdf_path),
+                on_progress=phase1_progress
+            )
+
+            report_progress("extraction", 100, 100, "Extraction complete")
             
             # Check for extraction errors
             if phase1_result.error:
@@ -519,7 +541,7 @@ if __name__ == "__main__":
         else:
             config = UnifiedPipelineConfig.for_files(Path(args.output))
         
-        async with UnifiedPipeline(config) as pipeline:
+        async with UnifiedPipeline(config) as pipeline: # Run pipeline
             result = await pipeline.process_document(args.pdf_path, title=args.title)
             
             print()

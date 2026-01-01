@@ -39,6 +39,7 @@ from src.database import (
     get_repositories,
     Repositories
 )
+from src.database.repositories.entity import EntityRepository
 
 logger = logging.getLogger(__name__)
 
@@ -81,11 +82,12 @@ class PipelineDatabaseWriter:
         self._db = db
         self._repos: Optional[Repositories] = None
         self._connected = False
-        
+        self._owns_connection = False  # Track if we created the connection
+
         # File export options
         self.export_files = export_files
         self.export_dir = Path(export_dir) if export_dir else None
-        
+
         # ID mappings (Phase 1 ID → PostgreSQL UUID)
         self._chunk_id_map: Dict[str, UUID] = {}
         self._image_id_map: Dict[str, UUID] = {}
@@ -94,21 +96,28 @@ class PipelineDatabaseWriter:
         """Connect to database."""
         if self._connected:
             return
-        
+
         if self._db is None:
             if not self.connection_string:
                 raise ValueError("Either connection_string or db must be provided")
             self._db = await init_database(self.connection_string)
-        
+            self._owns_connection = True  # We created it, we own it
+
         self._repos = get_repositories(self._db)
         self._connected = True
         logger.info("PipelineDatabaseWriter connected to database")
     
     async def close(self) -> None:
-        """Close database connection."""
-        if self._db and self._connected:
-            await close_database()
+        """Release database reference without closing shared pool.
+
+        The DatabaseConnection is a singleton managed by the API's lifespan handler.
+        We only release our reference, never close the pool.
+        """
+        if self._connected:
+            self._db = None
+            self._repos = None
             self._connected = False
+            logger.info("PipelineDatabaseWriter released database reference")
     
     @property
     def repos(self) -> Repositories:
@@ -182,9 +191,17 @@ class PipelineDatabaseWriter:
             if chunks:
                 if on_progress:
                     on_progress("chunks", 0, len(chunks))
-                
+
                 await self._insert_chunks(doc_id, chunks, on_progress)
-            
+
+            # Step 2.5: Populate entities from chunk CUIs
+            if chunks:
+                if on_progress:
+                    on_progress("entities", 0, 1)
+                await self._populate_entities(chunks, on_progress)
+                if on_progress:
+                    on_progress("entities", 1, 1)
+
             # Step 3: Insert images
             if images:
                 if on_progress:
@@ -345,16 +362,105 @@ class PipelineDatabaseWriter:
         if not link_records:
             logger.warning("No links could be mapped - check ID consistency")
             return 0
-        
+
         # Batch insert
         count = await self.repos.links.create_many(link_records)
-        
+
         if on_progress:
             on_progress("links", len(links), len(links))
-        
+
         logger.info(f"Inserted {count} links (from {len(links)} original)")
         return count
-    
+
+    async def _populate_entities(
+        self,
+        chunks: List,
+        on_progress: callable = None
+    ) -> int:
+        """
+        Extract unique entities from chunks and upsert to entities table.
+
+        This populates the entities table from:
+        1. UMLS CUIs found in chunks (when SciSpacy works)
+        2. Regex-extracted entities (as fallback when no CUIs)
+
+        This enables the Entities tab to show extracted medical concepts.
+        """
+        import hashlib
+
+        # Create entity repository
+        entity_repo = EntityRepository(self._db)
+
+        # Collect all entities from chunks
+        entities_data = []
+        seen_regex_entities = set()  # Track unique regex entities
+
+        for chunk in chunks:
+            chunk_data = self._extract_chunk_data(chunk) if not isinstance(chunk, dict) else chunk
+            cuis = chunk_data.get('cuis', [])
+            entities = chunk_data.get('entities', [])
+
+            # Build entity lookup from entities list if available
+            entity_lookup = {}
+            if entities:
+                for e in entities:
+                    if isinstance(e, dict):
+                        cui = e.get('cui')
+                        if cui:
+                            entity_lookup[cui] = {
+                                'name': e.get('text', cui),
+                                'semantic_type': e.get('type') or e.get('semantic_type'),
+                                'tui': e.get('tui')
+                            }
+
+            # Add UMLS entities (with real CUIs)
+            for cui in cuis:
+                if cui:
+                    entity_info = entity_lookup.get(cui, {})
+                    entities_data.append({
+                        'cui': cui,
+                        'name': entity_info.get('name', cui),
+                        'semantic_type': entity_info.get('semantic_type'),
+                        'tui': entity_info.get('tui'),
+                        'chunk_count_increment': 1
+                    })
+
+            # FALLBACK: Add regex-extracted entities when no CUIs available
+            # This ensures entities are shown even when SciSpacy is unavailable
+            if not cuis and entities:
+                for e in entities:
+                    if isinstance(e, dict):
+                        text = e.get('text', '').strip()
+                        category = e.get('category') or e.get('type') or 'EXTRACTED'
+
+                        if text and len(text) >= 2:
+                            # Generate synthetic CUI from text hash
+                            text_normalized = text.lower()
+                            text_hash = hashlib.md5(text_normalized.encode()).hexdigest()[:8]
+                            synthetic_cui = f"REGEX_{text_hash}"
+
+                            # Track to avoid duplicates within same chunk
+                            entity_key = (synthetic_cui, text_normalized)
+                            if entity_key not in seen_regex_entities:
+                                seen_regex_entities.add(entity_key)
+                                entities_data.append({
+                                    'cui': synthetic_cui,
+                                    'name': text,
+                                    'semantic_type': category,
+                                    'tui': None,
+                                    'chunk_count_increment': 1
+                                })
+
+        if not entities_data:
+            logger.info("No entities found in chunks")
+            return 0
+
+        # Batch upsert
+        count = await entity_repo.upsert_many(entities_data)
+
+        logger.info(f"Populated {count} unique entities from {len(entities_data)} occurrences")
+        return count
+
     # =========================================================================
     # Data Extraction
     # =========================================================================
@@ -387,14 +493,18 @@ class PipelineDatabaseWriter:
         data['end_char'] = getattr(chunk, 'end_char', None)
         
         # Classification
-        data['chunk_type'] = getattr(chunk, 'chunk_type', None)
+        chunk_type = getattr(chunk, 'chunk_type', None)
+        if hasattr(chunk_type, 'value'):
+            chunk_type = chunk_type.value
+        data['chunk_type'] = chunk_type
+        
         data['specialty'] = getattr(chunk, 'specialty', None)
         
         # Embedding
-        embedding = (
-            getattr(chunk, 'text_embedding', None) or 
-            getattr(chunk, 'embedding', None)
-        )
+        embedding = getattr(chunk, 'text_embedding', None)
+        if embedding is None:
+            embedding = getattr(chunk, 'embedding', None)
+            
         if embedding is not None:
             if isinstance(embedding, np.ndarray):
                 data['embedding'] = embedding.tolist()
@@ -413,7 +523,10 @@ class PipelineDatabaseWriter:
             data['entities'] = [
                 e if isinstance(e, dict) else {
                     'text': getattr(e, 'text', ''),
-                    'type': getattr(e, 'type', ''),
+                    'category': getattr(e, 'category', ''),
+                    'type': getattr(e, 'category', ''),  # Alias for compatibility
+                    'normalized': getattr(e, 'normalized', ''),
+                    'confidence': getattr(e, 'confidence', 0.0),
                     'cui': getattr(e, 'cui', None)
                 }
                 for e in entities
@@ -423,7 +536,10 @@ class PipelineDatabaseWriter:
         
         # Metadata
         data['metadata'] = getattr(chunk, 'metadata', {}) or {}
-        
+
+        # Summary (generated by ContentSummarizer)
+        data['summary'] = getattr(chunk, 'summary', None)
+
         return data
     
     def _extract_image_data(self, image) -> Dict[str, Any]:
@@ -455,15 +571,19 @@ class PipelineDatabaseWriter:
         )
         
         # Classification
-        data['image_type'] = (
+        image_type = (
             getattr(image, 'image_type', None) or 
             getattr(image, 'vlm_image_type', None)
         )
+        if hasattr(image_type, 'value'):
+            image_type = image_type.value
+        data['image_type'] = image_type
         data['is_decorative'] = getattr(image, 'is_decorative', False)
         
         # VLM caption
         data['vlm_caption'] = getattr(image, 'vlm_caption', None)
         data['vlm_confidence'] = getattr(image, 'vlm_confidence', None)
+        data['caption_summary'] = getattr(image, 'caption_summary', None)
         
         # Visual embedding (512d BiomedCLIP)
         embedding = getattr(image, 'embedding', None)
@@ -508,10 +628,14 @@ class PipelineDatabaseWriter:
                 'metadata': link.get('metadata', {})
             }
         
+        link_type = getattr(link, 'link_type', None) or getattr(link, 'match_type', 'unknown')
+        if hasattr(link_type, 'value'):
+            link_type = link_type.value
+            
         return {
             'chunk_id': getattr(link, 'chunk_id', None),
             'image_id': getattr(link, 'image_id', None),
-            'link_type': getattr(link, 'link_type', None) or getattr(link, 'match_type', 'unknown'),
+            'link_type': link_type,
             'score': getattr(link, 'score', 0.0) or getattr(link, 'strength', 0.0),
             'proximity_score': getattr(link, 'proximity_score', None),
             'semantic_score': getattr(link, 'semantic_score', None),

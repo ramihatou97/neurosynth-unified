@@ -76,23 +76,27 @@ class TriageConfig:
 
 @dataclass
 class ChunkingConfig:
-    """Text chunking configuration."""
-    # Chunk sizes
-    min_chunk_size: int = 100
-    max_chunk_size: int = 1500
-    target_chunk_size: int = 800
-    
-    # Overlap
-    overlap_size: int = 100
-    
+    """Text chunking configuration optimized for synthesis."""
+    # Chunk sizes (optimized for synthesis context windows)
+    min_chunk_size: int = 150       # Increased from 100 to avoid fragments
+    max_chunk_size: int = 1200      # Reduced from 1500 for complete thoughts
+    target_chunk_size: int = 600    # Reduced from 800 for richer per-section context
+
+    # Overlap (increased for better continuity)
+    overlap_size: int = 150         # Increased from 100
+
     # Medical-aware settings
     preserve_sentences: bool = True
     preserve_paragraphs: bool = True
     protect_abbreviations: bool = True
-    
+
     # Classification
     classify_chunks: bool = True
     detect_specialty: bool = True
+
+    # Synthesis optimization (new)
+    prefer_complete_sections: bool = True   # Don't split if under max
+    min_procedure_steps: int = 2            # Procedure chunks should have 2+ steps
 
 
 @dataclass  

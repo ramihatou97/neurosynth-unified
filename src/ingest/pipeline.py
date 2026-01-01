@@ -21,9 +21,11 @@ Enhancements:
 - Expanded authority scores
 """
 
+import asyncio
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple, Set, AsyncIterator
@@ -50,10 +52,11 @@ import time
 
 from src.shared.models import (
     Document, Page, Section, SemanticChunk, ExtractedImage, ExtractedTable,
-    DocumentStatus, ChunkType, ProcessingManifest, LinkResult
+    DocumentStatus, ChunkType, ProcessingManifest, LinkResult, NeuroEntity
 )
 from src.core.database import NeuroDatabase
 from src.core.neuro_chunker import NeuroSemanticChunker, TableAwareChunker
+from src.core.quality_scorer import ChunkQualityScorer, get_quality_scorer
 from src.ingest.section_detector import SectionDetector, OutlineBasedSectionDetector
 from src.ingest.image_extractor import NeuroImageExtractor
 from src.ingest.table_extractor import TableExtractor
@@ -63,7 +66,7 @@ from src.core.metrics import get_metrics_collector
 
 # UMLS extraction for standardized medical concepts
 try:
-    from src.core.umls_extractor import UMLSExtractor
+    from src.core.umls_extractor import UMLSExtractor, get_default_extractor
     HAS_UMLS = True
 except ImportError:
     HAS_UMLS = False
@@ -84,6 +87,16 @@ try:
     HAS_KNOWLEDGE_GRAPH = True
 except ImportError:
     HAS_KNOWLEDGE_GRAPH = False
+
+# Relation Extraction Pipeline (spaCy NLP-based)
+try:
+    from src.ingest.relation_pipeline import RelationExtractionPipeline
+    HAS_RELATION_EXTRACTION = True
+except Exception as e:
+    # ImportError, pydantic.ConfigError (Python 3.14+ compat), or other
+    HAS_RELATION_EXTRACTION = False
+    import logging
+    logging.getLogger(__name__).warning(f"Relation extraction unavailable: {e}")
 
 # VLM Image Captioning (Claude Vision)
 try:
@@ -117,12 +130,14 @@ class ProcessingStage(Enum):
     IMAGES = "images"
     TABLES = "tables"
     CHUNKING = "chunking"
-    UMLS_EXTRACTION = "umls_extraction"  # New: UMLS CUI extraction
+    CHUNK_SUMMARIZATION = "chunk_summarization"  # Stage 4.5: Brief summaries
+    UMLS_EXTRACTION = "umls_extraction"  # UMLS CUI extraction
     LINKING = "linking"
     TEXT_EMBEDDING = "text_embedding"
     IMAGE_EMBEDDING = "image_embedding"
-    CAPTION_EMBEDDING = "caption_embedding"  # New: VLM caption embedding
+    CAPTION_EMBEDDING = "caption_embedding"  # VLM caption embedding
     VLM_CAPTION = "vlm_caption"
+    CAPTION_SUMMARIZATION = "caption_summarization"  # Stage 8.5: Caption summaries
     STORAGE = "storage"
     COMPLETE = "complete"
 
@@ -156,10 +171,15 @@ class PipelineConfig:
     enable_knowledge_graph: bool = True
     knowledge_graph_path: Optional[Path] = None  # Falls back to output_dir/knowledge_graph.json
 
+    # Relation Extraction (spaCy NLP - 16 relation types)
+    enable_relation_extraction: bool = True
+    relation_extraction_model: str = "en_core_web_lg"  # or scispacy model
+    relation_min_confidence: float = 0.5
+
     # VLM Image Captioning (Claude Vision - +30% image retrieval)
     enable_vlm_captions: bool = True
     vlm_model: str = "claude-sonnet-4-20250514"
-    vlm_batch_size: int = 5
+    vlm_batch_size: int = 10
     vlm_api_key: Optional[str] = None  # Falls back to ANTHROPIC_API_KEY env var
 
     # UMLS Extraction (SciSpacy - dual extraction with regex)
@@ -174,6 +194,11 @@ class PipelineConfig:
 
     # Caption embedding (embed VLM captions with text embedder)
     enable_caption_embedding: bool = True
+
+    # Content summarization (brief human-readable summaries)
+    enable_summaries: bool = True
+    summary_model: str = "claude-sonnet-4-20250514"
+    summary_max_concurrent: int = 10  # Concurrent API calls for batch efficiency
 
 
 @dataclass
@@ -217,18 +242,20 @@ class ProgressTracker:
     
     STAGE_WEIGHTS = {
         ProcessingStage.INIT: (0.0, 0.02),
-        ProcessingStage.STRUCTURE: (0.02, 0.08),
-        ProcessingStage.PAGES: (0.08, 0.22),
-        ProcessingStage.IMAGES: (0.22, 0.30),
-        ProcessingStage.TABLES: (0.30, 0.35),
-        ProcessingStage.CHUNKING: (0.35, 0.42),
-        ProcessingStage.UMLS_EXTRACTION: (0.42, 0.50),
-        ProcessingStage.LINKING: (0.50, 0.55),
-        ProcessingStage.TEXT_EMBEDDING: (0.55, 0.68),
-        ProcessingStage.IMAGE_EMBEDDING: (0.68, 0.75),
-        ProcessingStage.VLM_CAPTION: (0.75, 0.85),
-        ProcessingStage.CAPTION_EMBEDDING: (0.85, 0.90),
-        ProcessingStage.STORAGE: (0.90, 0.98),
+        ProcessingStage.STRUCTURE: (0.02, 0.06),
+        ProcessingStage.PAGES: (0.06, 0.15),
+        ProcessingStage.IMAGES: (0.15, 0.20),
+        ProcessingStage.TABLES: (0.20, 0.24),
+        ProcessingStage.CHUNKING: (0.24, 0.28),
+        ProcessingStage.CHUNK_SUMMARIZATION: (0.28, 0.32),
+        ProcessingStage.UMLS_EXTRACTION: (0.32, 0.36),
+        ProcessingStage.LINKING: (0.36, 0.40),
+        ProcessingStage.TEXT_EMBEDDING: (0.40, 0.48),
+        ProcessingStage.IMAGE_EMBEDDING: (0.48, 0.52),
+        ProcessingStage.VLM_CAPTION: (0.52, 0.85),  # 33% - VLM is the bottleneck
+        ProcessingStage.CAPTION_SUMMARIZATION: (0.85, 0.88),
+        ProcessingStage.CAPTION_EMBEDDING: (0.88, 0.92),
+        ProcessingStage.STORAGE: (0.92, 0.98),
         ProcessingStage.COMPLETE: (0.98, 1.0),
     }
     
@@ -368,12 +395,11 @@ class NeuroIngestPipeline:
             if text_embedder is None:
                 try:
                     self.text_embedder = create_text_embedder(
-                        provider=config.text_embedding_provider,
-                        model=config.text_embedding_model
+                        provider=config.text_embedding_provider
                     )
                     logger.info(
-                        f"Auto-created text embedder: {config.text_embedding_provider}/"
-                        f"{config.text_embedding_model} ({self.text_embedder.dimension}d)"
+                        f"Auto-created text embedder: {config.text_embedding_provider} "
+                        f"({self.text_embedder.dimension}d)"
                     )
                 except Exception as e:
                     logger.warning(f"Failed to auto-create text embedder: {e}")
@@ -383,15 +409,19 @@ class NeuroIngestPipeline:
 
             if image_embedder is None:
                 try:
+                    # Use subprocess mode for biomedclip to avoid memory issues
+                    use_subprocess = config.image_embedding_provider == "biomedclip"
                     self.image_embedder = create_image_embedder(
-                        provider=config.image_embedding_provider
+                        provider=config.image_embedding_provider,
+                        use_subprocess=use_subprocess
                     )
+                    mode_str = " (subprocess)" if use_subprocess else ""
                     logger.info(
-                        f"Auto-created image embedder: {config.image_embedding_provider} "
+                        f"Auto-created image embedder: {config.image_embedding_provider}{mode_str} "
                         f"({self.image_embedder.dimension}d)"
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to auto-create image embedder: {e}")
+                    logger.warning(f"Image embeddings disabled: {e}")
                     self.image_embedder = None
             else:
                 self.image_embedder = image_embedder
@@ -513,15 +543,16 @@ class NeuroIngestPipeline:
                 logger.warning(f"Failed to start metrics server: {e}")
 
         # UMLS Extractor (SciSpacy - complementary to regex entities)
+        # Uses cached singleton to save ~1.2GB RAM for concurrent documents
         self._umls_extractor: Optional["UMLSExtractor"] = None
         if config.enable_umls and HAS_UMLS:
             try:
-                self._umls_extractor = UMLSExtractor(
+                self._umls_extractor = get_default_extractor(
                     model=config.umls_model,
                     threshold=config.umls_threshold
                 )
                 logger.info(
-                    f"UMLS extraction enabled: model={config.umls_model}, "
+                    f"UMLS extraction enabled (cached): model={config.umls_model}, "
                     f"threshold={config.umls_threshold}"
                 )
             except Exception as e:
@@ -530,6 +561,30 @@ class NeuroIngestPipeline:
             logger.warning(
                 "UMLS extraction requested but scispacy not installed. "
                 "Install with: pip install scispacy && pip install en_core_sci_lg model"
+            )
+
+        # Relation Extraction Pipeline (spaCy NLP - 16 relation types)
+        self._relation_pipeline: Optional["RelationExtractionPipeline"] = None
+        if config.enable_relation_extraction and HAS_RELATION_EXTRACTION:
+            try:
+                from src.core.relation_extractor import NeuroRelationExtractor
+                extractor = NeuroRelationExtractor(model=config.relation_extraction_model)
+                self._relation_pipeline = RelationExtractionPipeline(
+                    db_pool=database.pool if database else None,
+                    extractor=extractor,
+                    batch_size=50,
+                    min_confidence=config.relation_min_confidence,
+                )
+                logger.info(
+                    f"Relation extraction enabled: model={config.relation_extraction_model}, "
+                    f"min_confidence={config.relation_min_confidence}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to initialize relation extractor: {e}")
+        elif config.enable_relation_extraction and not HAS_RELATION_EXTRACTION:
+            logger.warning(
+                "Relation extraction requested but relation_pipeline.py not found. "
+                "Entity relationships will not be extracted."
             )
 
     async def process_document(
@@ -621,6 +676,9 @@ class NeuroIngestPipeline:
             document.status = DocumentStatus.CHUNKING
             chunks = self._chunk_sections(sections, tables, document.id, tracker)
 
+            # Stage 4.5: Generate brief summaries for chunks
+            await self._summarize_chunks(chunks, tracker)
+
             # Stage 3.5: UMLS extraction (complements regex entities)
             if self._umls_extractor:
                 await self._extract_umls_cuis(chunks, tracker)
@@ -636,12 +694,19 @@ class NeuroIngestPipeline:
             if self._knowledge_graph and self._entity_extractor:
                 await self._build_knowledge_graph(chunks, document, tracker)
 
+            # Stage 4.6: Extract Relations (spaCy NLP)
+            if self._relation_pipeline:
+                await self._extract_relations(chunks, tracker)
+
             # Stage 5: Generate embeddings
             if self.config.enable_embeddings:
                 document.status = DocumentStatus.EMBEDDING
                 await self._generate_embeddings(chunks, images, tracker, document)
                 chunks = self.fuser.fuse_embeddings(chunks, images)
-            
+
+            # Stage 8.5: Generate brief summaries for image captions
+            await self._summarize_captions(images, tracker)
+
             tracker.update(ProcessingStage.STORAGE, 0.0, "Storing to database")
             
             # Stage 6: Store atomically
@@ -932,6 +997,11 @@ class NeuroIngestPipeline:
             f"Created {len(all_chunks)} chunks"
         )
 
+        # Apply quality scoring to all chunks
+        quality_scorer = get_quality_scorer()
+        for chunk in all_chunks:
+            quality_scorer.score_chunk(chunk)
+
         return all_chunks
 
     async def _extract_umls_cuis(
@@ -965,10 +1035,12 @@ class NeuroIngestPipeline:
         # Batch extract for efficiency
         try:
             texts = [chunk.content for chunk in chunks]
+            # Use multiple CPU cores for parallel UMLS extraction (4-6x speedup)
+            n_cores = max(1, (os.cpu_count() or 1) - 1)
             entities_batch = self._umls_extractor.extract_batch(
                 texts,
                 batch_size=32,
-                n_process=1
+                n_process=n_cores
             )
 
             for idx, (chunk, entities) in enumerate(zip(chunks, entities_batch)):
@@ -1029,10 +1101,28 @@ class NeuroIngestPipeline:
                 chunk.entities = self._entity_extractor.extract(chunk.content)
                 chunk.entity_names = [e.normalized for e in chunk.entities]
 
-            # Add entities to graph
+            # Add regex entities to graph
             for entity in chunk.entities:
                 self._knowledge_graph.add_entity(entity, chunk.id, document.id)
                 total_entities += 1
+
+            # Phase 4.1: Add UMLS entities to knowledge graph
+            # Creates additional nodes for UMLS-linked concepts with CUIs
+            umls_entities = getattr(chunk, 'umls_entities', None)
+            if umls_entities:
+                for umls_ent in umls_entities:
+                    # Convert UMLSEntity to NeuroEntity for graph compatibility
+                    graph_entity = NeuroEntity(
+                        text=umls_ent.name,
+                        category=f"UMLS_{umls_ent.semantic_type.upper().replace(' ', '_')}",
+                        normalized=f"{umls_ent.name} [{umls_ent.cui}]",
+                        start=umls_ent.start_char,
+                        end=umls_ent.end_char,
+                        confidence=umls_ent.score,
+                        context_snippet=""
+                    )
+                    self._knowledge_graph.add_entity(graph_entity, chunk.id, document.id)
+                    total_entities += 1
 
             # Extract and add relationships
             relations = self._entity_extractor.extract_relations(
@@ -1066,6 +1156,70 @@ class NeuroIngestPipeline:
             )
         except Exception as e:
             logger.error(f"Failed to save knowledge graph: {e}")
+
+    async def _extract_relations(
+        self,
+        chunks: List[SemanticChunk],
+        tracker: ProgressTracker
+    ) -> None:
+        """
+        Extract entity relations from chunks using spaCy NLP.
+
+        Complements the regex-based knowledge graph with NLP-based relation
+        extraction for 16 neurosurgical relation types.
+
+        Args:
+            chunks: List of semantic chunks to process
+            tracker: Progress tracker for updates
+        """
+        if not self._relation_pipeline:
+            return
+
+        total_chunks = len(chunks)
+        total_relations = 0
+
+        tracker.update(
+            ProcessingStage.LINKING,
+            0.6,
+            f"Extracting relations from {total_chunks} chunks"
+        )
+
+        for idx, chunk in enumerate(chunks):
+            try:
+                relations = await self._relation_pipeline.process_chunk(
+                    chunk_id=chunk.id,
+                    chunk_text=chunk.content,
+                )
+                total_relations += len(relations)
+
+                # Progress update every 10 chunks
+                if (idx + 1) % 10 == 0 or idx == total_chunks - 1:
+                    progress = 0.6 + (idx + 1) / total_chunks * 0.3
+                    tracker.update(
+                        ProcessingStage.LINKING,
+                        progress,
+                        f"Relation extraction: {total_relations} relations from {idx+1}/{total_chunks} chunks"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Relation extraction failed for chunk {chunk.id}: {e}")
+
+        # Flush remaining relations
+        try:
+            await self._relation_pipeline.flush()
+            stats = self._relation_pipeline.get_stats()
+            logger.info(
+                f"Relation extraction complete: {stats['relations']} relations, "
+                f"{stats['entities']} entities from {stats['chunks']} chunks"
+            )
+        except Exception as e:
+            logger.error(f"Failed to flush relations: {e}")
+
+        tracker.update(
+            ProcessingStage.LINKING,
+            0.95,
+            f"Relation extraction complete: {total_relations} relations"
+        )
 
     async def _generate_embeddings(
         self,
@@ -1428,6 +1582,195 @@ class NeuroIngestPipeline:
                 return score
 
         return 1.0
+
+    async def _summarize_chunks(
+        self,
+        chunks: List[SemanticChunk],
+        tracker: ProgressTracker
+    ) -> None:
+        """
+        Stage 4.5: Generate brief human-readable summaries for chunks.
+
+        Uses efficient batching with concurrent API calls for performance.
+        Summaries identify: subject + distinguishing aspect.
+
+        Format: "[Subject] — [distinguishing aspect]"
+        Example: "Pterional approach — scalp incision technique"
+        """
+        logger.info(f"[SUMMARIZATION] _summarize_chunks called. enable_summaries={self.config.enable_summaries}, chunk_count={len(chunks)}")
+
+        if not self.config.enable_summaries or not chunks:
+            tracker.update(
+                ProcessingStage.CHUNK_SUMMARIZATION,
+                1.0,
+                "Chunk summarization disabled"
+            )
+            return
+
+        tracker.update(
+            ProcessingStage.CHUNK_SUMMARIZATION,
+            0.0,
+            f"Summarizing {len(chunks)} chunks"
+        )
+
+        try:
+            from src.ingest.chunk_summarizer import ContentSummarizer
+            import anthropic
+
+            # Create summarizer with efficient concurrency
+            client = anthropic.AsyncAnthropic()
+            summarizer = ContentSummarizer(
+                client=client,
+                model=self.config.summary_model,
+                max_concurrent=self.config.summary_max_concurrent
+            )
+
+            total_chunks = len(chunks)
+            summarized = 0
+
+            # Process in batches for progress updates
+            batch_size = 20
+            for i in range(0, total_chunks, batch_size):
+                batch = chunks[i:i + batch_size]
+
+                # Concurrent summarization within batch
+                tasks = [
+                    summarizer.summarize_chunk(chunk.content)
+                    for chunk in batch
+                ]
+
+                summaries = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Store summaries on chunks
+                for chunk, summary in zip(batch, summaries):
+                    if isinstance(summary, Exception):
+                        logger.warning(f"Chunk summary failed: {summary}")
+                        chunk.summary = None
+                    else:
+                        chunk.summary = summary
+                        summarized += 1
+
+                # Progress update
+                progress = min((i + batch_size) / total_chunks, 1.0)
+                tracker.update(
+                    ProcessingStage.CHUNK_SUMMARIZATION,
+                    progress,
+                    f"Summarized {summarized}/{total_chunks} chunks"
+                )
+
+            logger.info(f"Chunk summarization complete: {summarized}/{total_chunks} chunks")
+
+        except ImportError as e:
+            logger.warning(f"Summarizer not available: {e}")
+            tracker.update(
+                ProcessingStage.CHUNK_SUMMARIZATION,
+                1.0,
+                "Summarizer module not found"
+            )
+        except Exception as e:
+            logger.error(f"Chunk summarization failed: {e}")
+            tracker.update(
+                ProcessingStage.CHUNK_SUMMARIZATION,
+                1.0,
+                f"Summarization error: {e}"
+            )
+
+    async def _summarize_captions(
+        self,
+        images: List[ExtractedImage],
+        tracker: ProgressTracker
+    ) -> None:
+        """
+        Stage 8.5: Generate brief summaries for VLM captions.
+
+        Only processes images that have VLM captions, avoiding redundant work.
+        Uses efficient concurrent processing.
+
+        Format: "[Image type] — [key detail]"
+        Example: "MRI T1 axial — vestibular schwannoma"
+        """
+        logger.info(f"[SUMMARIZATION] _summarize_captions called. enable_summaries={self.config.enable_summaries}, image_count={len(images)}")
+
+        if not self.config.enable_summaries:
+            tracker.update(
+                ProcessingStage.CAPTION_SUMMARIZATION,
+                1.0,
+                "Caption summarization disabled"
+            )
+            return
+
+        # Only summarize images that have VLM captions
+        images_with_captions = [
+            img for img in images
+            if img.vlm_caption and not img.is_decorative
+        ]
+
+        if not images_with_captions:
+            tracker.update(
+                ProcessingStage.CAPTION_SUMMARIZATION,
+                1.0,
+                "No captions to summarize"
+            )
+            return
+
+        tracker.update(
+            ProcessingStage.CAPTION_SUMMARIZATION,
+            0.0,
+            f"Summarizing {len(images_with_captions)} captions"
+        )
+
+        try:
+            from src.ingest.chunk_summarizer import ContentSummarizer
+            import anthropic
+
+            client = anthropic.AsyncAnthropic()
+            summarizer = ContentSummarizer(
+                client=client,
+                model=self.config.summary_model,
+                max_concurrent=self.config.summary_max_concurrent
+            )
+
+            total = len(images_with_captions)
+            summarized = 0
+
+            # Concurrent summarization
+            tasks = [
+                summarizer.summarize_image_caption(img.vlm_caption)
+                for img in images_with_captions
+            ]
+
+            summaries = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for img, summary in zip(images_with_captions, summaries):
+                if isinstance(summary, Exception):
+                    logger.warning(f"Caption summary failed: {summary}")
+                    img.caption_summary = None
+                else:
+                    img.caption_summary = summary
+                    summarized += 1
+
+            tracker.update(
+                ProcessingStage.CAPTION_SUMMARIZATION,
+                1.0,
+                f"Summarized {summarized}/{total} captions"
+            )
+
+            logger.info(f"Caption summarization complete: {summarized}/{total}")
+
+        except ImportError as e:
+            logger.warning(f"Summarizer not available: {e}")
+            tracker.update(
+                ProcessingStage.CAPTION_SUMMARIZATION,
+                1.0,
+                "Summarizer module not found"
+            )
+        except Exception as e:
+            logger.error(f"Caption summarization failed: {e}")
+            tracker.update(
+                ProcessingStage.CAPTION_SUMMARIZATION,
+                1.0,
+                f"Summarization error: {e}"
+            )
 
     def export_for_phase2(
         self,

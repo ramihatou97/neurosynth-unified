@@ -66,6 +66,7 @@ class EmbeddingStats:
     retry_count: int = 0
     total_tokens: int = 0
     total_time_ms: float = 0.0
+    total_latency_seconds: float = 0.0
 
 
 class TextEmbedder(ABC):
@@ -784,19 +785,116 @@ def create_text_embedder(
         raise ValueError(f"Unknown text embedder provider: {provider}")
 
 
+class SubprocessBiomedCLIPEmbedder(ImageEmbedder):
+    """
+    BiomedCLIP via subprocess for memory isolation.
+
+    Prevents segfaults when running SciSpacy + BiomedCLIP in same process.
+    Uses subprocess that dies after batch → OS reclaims 100% memory.
+    """
+
+    def __init__(self):
+        from src.ingest.subprocess_embedder import SubprocessEmbedder, EmbedderConfig
+
+        self._embedder = SubprocessEmbedder(
+            config=EmbedderConfig(
+                max_retries=2,
+                timeout_seconds=300,
+                batch_size=10,
+            )
+        )
+        self._dimension = 512
+        self._stats = EmbeddingStats()
+
+    @property
+    def dimension(self) -> int:
+        return self._dimension
+
+    @property
+    def model_name(self) -> str:
+        return "BiomedCLIP-Subprocess"
+
+    @property
+    def stats(self) -> EmbeddingStats:
+        return self._stats
+
+    async def embed(self, image_path: Path) -> np.ndarray:
+        """Embed single image."""
+        embeddings = await self.embed_batch([image_path])
+        return embeddings[0]
+
+    async def embed_batch(
+        self,
+        image_paths: List[Path],
+        on_progress: Optional[Callable[[int, int], None]] = None
+    ) -> List[np.ndarray]:
+        """Embed multiple images via subprocess."""
+        import asyncio
+
+        if not image_paths:
+            return []
+
+        self._stats.total_requests += 1
+        start_time = asyncio.get_event_loop().time()
+
+        try:
+            # Convert to dicts with image bytes
+            images = []
+            for path in image_paths:
+                path = Path(path)
+                if path.exists():
+                    with open(path, 'rb') as f:
+                        images.append({
+                            'image_bytes': f.read(),
+                            'ext': path.suffix.lstrip('.'),
+                            'path': str(path),
+                        })
+
+            if not images:
+                return [np.zeros(self._dimension, dtype=np.float32) for _ in image_paths]
+
+            # Run in thread pool (subprocess_embedder is sync)
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                self._embedder.embed_images,
+                images
+            )
+
+            # Extract embeddings
+            embeddings = []
+            for img in result:
+                emb = img.get('embedding')
+                if emb:
+                    embeddings.append(np.array(emb, dtype=np.float32))
+                else:
+                    embeddings.append(np.zeros(self._dimension, dtype=np.float32))
+
+            self._stats.total_tokens += len(embeddings)
+            self._stats.total_latency_seconds += asyncio.get_event_loop().time() - start_time
+
+            return embeddings
+
+        except Exception as e:
+            self._stats.failed_requests += 1
+            raise EmbeddingError(f"Subprocess embedding failed: {e}") from e
+
+
 def create_image_embedder(
     provider: str = "clip",
     model: Optional[str] = None,
-    device: Optional[str] = None
+    device: Optional[str] = None,
+    use_subprocess: bool = False
 ) -> ImageEmbedder:
     """
     Factory function to create image embedder.
-    
+
     Args:
         provider: "clip" or "biomedclip"
         model: Model name (optional, uses default)
         device: Device to use ("cuda" or "cpu")
-        
+        use_subprocess: Use subprocess isolation for biomedclip (recommended)
+
     Returns:
         ImageEmbedder instance
     """
@@ -806,6 +904,10 @@ def create_image_embedder(
             device=device
         )
     elif provider == "biomedclip":
+        if use_subprocess:
+            return SubprocessBiomedCLIPEmbedder()
         return BiomedCLIPImageEmbedder(device=device)
+    elif provider == "biomedclip-subprocess":
+        return SubprocessBiomedCLIPEmbedder()
     else:
         raise ValueError(f"Unknown image embedder provider: {provider}")
