@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/images", tags=["Images"])
 
-IMAGE_DIR = Path(os.getenv("IMAGE_OUTPUT_DIR", "./data/images"))
+IMAGE_DIR = Path(os.getenv("IMAGE_OUTPUT_DIR", "./output/images"))
 
 
 @router.get("/{file_path:path}")

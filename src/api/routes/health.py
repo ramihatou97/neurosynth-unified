@@ -3,13 +3,19 @@ NeuroSynth Unified - Health Routes
 ===================================
 
 Health check and status API endpoints.
+
+WARNING: Rate limit tracking is in-memory only and will be lost on server restart.
+The rate limits shown are approximate and not integrated with actual API call tracking.
+For production, implement proper rate limiting middleware with Redis.
 """
 
+import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 
 from src.api.models import (
     HealthResponse,
@@ -23,7 +29,55 @@ from src.api.dependencies import (
     Settings
 )
 
+
+# =============================================================================
+# Rate Limit Models
+# =============================================================================
+
+class RateLimitInfo(BaseModel):
+    """Rate limit information for a service."""
+    used: int
+    limit: int
+    reset_at: datetime
+    remaining: int
+
+
+class RateLimitsResponse(BaseModel):
+    """Rate limits for all services."""
+    claude: RateLimitInfo
+    voyage: RateLimitInfo
+
+
+# In-memory rate tracking (WARNING: not integrated with actual API calls - see module docstring)
+# These are placeholder values. Actual tracking requires middleware integration.
+_rate_limits = {
+    "claude": {"used": 0, "limit": 100, "reset_at": datetime.utcnow() + timedelta(hours=1)},
+    "voyage": {"used": 0, "limit": 5000, "reset_at": datetime.utcnow() + timedelta(hours=1)}
+}
+_rate_limits_lock = asyncio.Lock()
+
 logger = logging.getLogger(__name__)
+
+
+async def _increment_rate_limit(service: str, count: int = 1):
+    """
+    Thread-safe increment of rate limit counter.
+
+    Call this from API wrapper functions to track actual usage.
+    Currently NOT integrated - this is a placeholder for future middleware.
+
+    Args:
+        service: "claude" or "voyage"
+        count: Number to increment by (default 1)
+    """
+    async with _rate_limits_lock:
+        now = datetime.utcnow()
+        if service in _rate_limits:
+            # Reset if past hour
+            if now > _rate_limits[service]["reset_at"]:
+                _rate_limits[service]["used"] = 0
+                _rate_limits[service]["reset_at"] = now + timedelta(hours=1)
+            _rate_limits[service]["used"] += count
 
 router = APIRouter(tags=["Health"])
 
@@ -266,3 +320,49 @@ async def get_metadata():
         "specialties": sorted(set(EXPANDED_CATEGORY_SPECIALTY_MAP.values())),
         "image_types": [it.value for it in ImageType]
     }
+
+
+# =============================================================================
+# Rate Limits
+# =============================================================================
+
+@router.get(
+    "/api/v1/rate-limits",
+    response_model=RateLimitsResponse,
+    summary="Get rate limits",
+    description="Get current rate limit status for Claude and Voyage APIs"
+)
+async def get_rate_limits():
+    """
+    Get current rate limit status.
+
+    Returns usage and limits for:
+    - Claude API (LLM calls)
+    - Voyage API (embedding calls)
+
+    NOTE: These values are approximate and not integrated with actual API tracking.
+    For production, implement proper rate limiting middleware with Redis.
+    """
+    async with _rate_limits_lock:
+        now = datetime.utcnow()
+
+        # Reset if past reset time
+        for key in _rate_limits:
+            if now > _rate_limits[key]["reset_at"]:
+                _rate_limits[key]["used"] = 0
+                _rate_limits[key]["reset_at"] = now + timedelta(hours=1)
+
+        return RateLimitsResponse(
+            claude=RateLimitInfo(
+                used=_rate_limits["claude"]["used"],
+                limit=_rate_limits["claude"]["limit"],
+                reset_at=_rate_limits["claude"]["reset_at"],
+                remaining=_rate_limits["claude"]["limit"] - _rate_limits["claude"]["used"]
+            ),
+            voyage=RateLimitInfo(
+                used=_rate_limits["voyage"]["used"],
+                limit=_rate_limits["voyage"]["limit"],
+                reset_at=_rate_limits["voyage"]["reset_at"],
+                remaining=_rate_limits["voyage"]["limit"] - _rate_limits["voyage"]["used"]
+            )
+        )

@@ -11,6 +11,8 @@ from src.api.routes.documents import router as documents_router
 from src.api.routes.health import router as health_router
 from src.api.routes.synthesis import router as synthesis_router
 from src.api.routes.ingest import router as ingest_router
+from src.api.routes.entities import router as entities_router
+from src.api.routes.indexes import router as indexes_router
 
 __all__ = [
     'search_router',
@@ -18,5 +20,7 @@ __all__ = [
     'documents_router',
     'health_router',
     'synthesis_router',
-    'ingest_router'
+    'ingest_router',
+    'entities_router',
+    'indexes_router'
 ]

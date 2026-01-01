@@ -272,7 +272,14 @@ async def generate_synthesis(request: SynthesisRequest):
             )
         
         logger.info(f"Starting synthesis: topic='{request.topic}', template={template_type.value}")
-        
+
+        # Check if search service is available
+        if not container.search:
+            raise HTTPException(
+                status_code=503,
+                detail="Search service not available - cannot generate synthesis. Check VOYAGE_API_KEY configuration."
+            )
+
         # Stage 1: Retrieval using existing SearchService
         # SearchResult ALREADY has all fields needed - no enrichment step!
         search_response = await container.search.search(
@@ -409,6 +416,15 @@ async def generate_synthesis_stream(request: SynthesisRequest):
                     "stage": "error",
                     "progress": 0,
                     "message": f"Invalid template_type: {request.template_type}"
+                })
+                return
+
+            # Check if search service is available
+            if not container.search:
+                yield _sse_event({
+                    "stage": "error",
+                    "progress": 0,
+                    "message": "Search service not available - check VOYAGE_API_KEY configuration"
                 })
                 return
 

@@ -13,6 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import json
 
+from pydantic import BaseModel
+from typing import List, Optional
+
 from src.api.models import (
     RAGRequest,
     RAGResponse,
@@ -27,6 +30,14 @@ from src.api.dependencies import (
     get_search_service,
     get_conversation_store
 )
+
+
+class CompareRequest(BaseModel):
+    """Request model for comparing surgical approaches."""
+    approach_a: str
+    approach_b: str
+    aspects: Optional[List[str]] = ["indications", "technique", "complications", "outcomes"]
+    max_chunks: int = 20
 
 logger = logging.getLogger(__name__)
 
@@ -361,17 +372,16 @@ async def summarize_document(
     description="Compare two surgical approaches"
 )
 async def compare_approaches(
-    approach1: str = Query(..., min_length=2),
-    approach2: str = Query(..., min_length=2),
+    request: CompareRequest,
     rag_engine = Depends(get_rag_engine)
 ):
     """Compare two surgical approaches."""
     try:
         result = await rag_engine.compare_approaches(
-            approach1=approach1,
-            approach2=approach2
+            approach1=request.approach_a,
+            approach2=request.approach_b
         )
-        
+
         return RAGResponse(
             answer=result.answer,
             citations=[
@@ -393,14 +403,168 @@ async def compare_approaches(
                 for c in result.used_citations
             ],
             images=[],
-            question=f"Compare {approach1} vs {approach2}",
+            question=f"Compare {request.approach_a} vs {request.approach_b}",
             context_chunks_used=result.context_chunks_used,
             generation_time_ms=result.generation_time_ms,
             search_time_ms=result.search_time_ms,
             total_time_ms=result.generation_time_ms + result.search_time_ms,
             model=result.model
         )
-        
+
     except Exception as e:
         logger.exception(f"Compare error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# History & Context Endpoints (Frontend Parity)
+# =============================================================================
+
+@router.get(
+    "/history",
+    summary="Get conversation history",
+    description="Get list of past conversations with pagination"
+)
+async def get_conversation_history(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    store = Depends(get_conversation_store)
+):
+    """
+    Get paginated list of past conversations.
+
+    Returns conversation metadata (id, created_at, message_count) without full history.
+    """
+    try:
+        # Get all conversations from store
+        all_conversations = store.list_all() if hasattr(store, 'list_all') else []
+
+        # Paginate
+        total = len(all_conversations)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_items = all_conversations[start:end]
+
+        return {
+            "conversations": [
+                {
+                    "id": conv.get("id", ""),
+                    "created_at": conv.get("created_at", ""),
+                    "updated_at": conv.get("updated_at", ""),
+                    "message_count": conv.get("message_count", 0),
+                    "preview": conv.get("preview", "")
+                }
+                for conv in page_items
+            ],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": (total + page_size - 1) // page_size if page_size > 0 else 0
+        }
+
+    except Exception as e:
+        logger.exception(f"History error: {e}")
+        # Return empty list on error rather than failing
+        return {
+            "conversations": [],
+            "page": page,
+            "page_size": page_size,
+            "total": 0,
+            "total_pages": 0
+        }
+
+
+@router.post(
+    "/clear",
+    summary="Clear conversations",
+    description="Clear conversation history"
+)
+async def clear_conversations(
+    conversation_ids: Optional[List[str]] = None,
+    store = Depends(get_conversation_store)
+):
+    """
+    Clear conversation history.
+
+    If conversation_ids provided, clears only those.
+    Otherwise clears all conversations.
+    """
+    try:
+        cleared_count = 0
+
+        if conversation_ids:
+            # Clear specific conversations
+            for conv_id in conversation_ids:
+                if store.delete(conv_id):
+                    cleared_count += 1
+        else:
+            # Clear all
+            if hasattr(store, 'clear_all'):
+                cleared_count = store.clear_all()
+            else:
+                # Fallback: delete one by one
+                all_ids = store.list_all() if hasattr(store, 'list_all') else []
+                for conv in all_ids:
+                    if store.delete(conv.get("id", "")):
+                        cleared_count += 1
+
+        return {
+            "status": "cleared",
+            "cleared_count": cleared_count
+        }
+
+    except Exception as e:
+        logger.exception(f"Clear error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/context",
+    summary="Get RAG context",
+    description="Get context chunks without generating an answer"
+)
+async def get_rag_context(
+    question: str = Query(..., min_length=1, description="Question to find context for"),
+    max_chunks: int = Query(20, ge=1, le=50, description="Maximum context chunks"),
+    rag_engine = Depends(get_rag_engine),
+    search_service = Depends(get_search_service)
+):
+    """
+    Get RAG context chunks for a question without generating an answer.
+
+    Useful for:
+    - Previewing what context will be used
+    - Debugging retrieval quality
+    - Building custom prompts
+    """
+    try:
+        # Use search service to find relevant chunks
+        search_result = await search_service.search(
+            query=question,
+            top_k=max_chunks,
+            mode="hybrid"
+        )
+
+        # Format context chunks
+        chunks = []
+        for i, result in enumerate(search_result.results):
+            chunks.append({
+                "index": i + 1,
+                "chunk_id": result.chunk_id,
+                "content": result.content,
+                "score": result.score,
+                "document_id": result.document_id,
+                "page_number": result.metadata.get("page_number") if result.metadata else None,
+                "chunk_type": result.metadata.get("chunk_type") if result.metadata else None
+            })
+
+        return {
+            "question": question,
+            "chunks": chunks,
+            "total_chunks": len(chunks),
+            "search_time_ms": search_result.search_time_ms if hasattr(search_result, 'search_time_ms') else 0
+        }
+
+    except Exception as e:
+        logger.exception(f"Context error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

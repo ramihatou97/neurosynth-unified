@@ -43,6 +43,7 @@ def convert_to_result_item(result) -> SearchResultItem:
                 'image_id': img.id,
                 'file_path': str(img.file_path) if hasattr(img, 'file_path') else '',
                 'caption': img.vlm_caption or img.caption or '',
+                'caption_summary': getattr(img, 'caption_summary', None),  # Brief summary
                 'image_type': img.image_type,
                 'page_number': img.page_number
             })
@@ -51,6 +52,7 @@ def convert_to_result_item(result) -> SearchResultItem:
         chunk_id=result.chunk_id,
         document_id=result.document_id,
         content=result.content,
+        summary=getattr(result, 'summary', None),  # Pre-computed human-readable summary
         title=result.title,
         chunk_type=result.chunk_type.value if hasattr(result.chunk_type, 'value') else str(result.chunk_type),
         page_start=result.page_start,
@@ -217,3 +219,90 @@ async def find_similar(
     except Exception as e:
         logger.exception(f"Similar search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/suggest",
+    summary="Search suggestions",
+    description="Get autocomplete suggestions for search queries"
+)
+async def search_suggest(
+    q: str = Query(..., min_length=1, max_length=100, description="Query prefix"),
+    limit: int = Query(10, ge=1, le=20, description="Max suggestions"),
+    types: Optional[str] = Query(None, description="Suggestion types: entity,document,query"),
+    search_service = Depends(get_search_service)
+):
+    """
+    Get autocomplete suggestions based on query prefix.
+
+    Returns suggestions from:
+    - Entity names (anatomy, procedures, etc.)
+    - Document titles
+    - Previous search queries (if available)
+    """
+    try:
+        suggestions = []
+
+        # Parse types filter
+        include_types = types.split(',') if types else ['entity', 'document']
+
+        # Get entity suggestions if search_service has entity access
+        if 'entity' in include_types and hasattr(search_service, 'container'):
+            entity_repo = search_service.container.entity_repository
+            if entity_repo:
+                entities = await entity_repo.search_by_name(q, limit=limit)
+                for entity in entities:
+                    suggestions.append({
+                        'text': entity.name,
+                        'type': 'entity',
+                        'cui': entity.cui,
+                        'semantic_type': entity.semantic_type
+                    })
+
+        # Get document title suggestions
+        if 'document' in include_types and hasattr(search_service, 'container'):
+            doc_repo = search_service.container.document_repository
+            if doc_repo:
+                docs = await doc_repo.search_by_title(q, limit=limit)
+                for doc in docs:
+                    suggestions.append({
+                        'text': doc.title,
+                        'type': 'document',
+                        'document_id': str(doc.id)
+                    })
+
+        # If no results from repos, do a quick search and extract terms
+        if not suggestions:
+            result = await search_service.search(
+                query=q,
+                mode="text",
+                top_k=5,
+                include_images=False,
+                rerank=False
+            )
+
+            # Extract unique entity names as suggestions
+            seen = set()
+            for r in result.results:
+                for name in (r.entity_names or [])[:3]:
+                    if name.lower().startswith(q.lower()) and name not in seen:
+                        seen.add(name)
+                        suggestions.append({
+                            'text': name,
+                            'type': 'entity_mention'
+                        })
+                if len(suggestions) >= limit:
+                    break
+
+        return {
+            'query': q,
+            'suggestions': suggestions[:limit]
+        }
+
+    except Exception as e:
+        logger.exception(f"Suggest error: {e}")
+        # Return empty suggestions on error rather than failing
+        return {
+            'query': q,
+            'suggestions': []
+        }

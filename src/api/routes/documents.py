@@ -9,7 +9,7 @@ import logging
 from typing import Optional, List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, BackgroundTasks
 
 from src.api.models import (
     DocumentSummary,
@@ -127,6 +127,103 @@ async def get_document(
 
 
 # =============================================================================
+# Update Document
+# =============================================================================
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class DocumentUpdate(PydanticBaseModel):
+    """Request model for document updates."""
+    title: Optional[str] = None
+    specialty: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+@router.patch(
+    "/{document_id}",
+    response_model=DocumentDetail,
+    responses={
+        404: {"model": ErrorResponse, "description": "Document not found"}
+    },
+    summary="Update document",
+    description="Update document metadata (title, specialty, custom metadata)"
+)
+async def update_document(
+    document_id: str = Path(..., description="Document UUID"),
+    update: DocumentUpdate = None,
+    repos = Depends(get_repositories)
+):
+    """
+    Update document metadata.
+
+    Supports partial updates - only provided fields are updated.
+    """
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    try:
+        # Check document exists
+        doc = await repos.documents.get(doc_uuid)
+        if not doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not found: {document_id}"
+            )
+
+        # Build update dict from non-None fields
+        update_data = {}
+        if update:
+            if update.title is not None:
+                update_data["title"] = update.title
+            if update.specialty is not None:
+                update_data["specialty"] = update.specialty
+            if update.metadata is not None:
+                # Merge with existing metadata
+                existing_meta = doc.get("metadata", {}) or {}
+                update_data["metadata"] = {**existing_meta, **update.metadata}
+
+        if not update_data:
+            # No updates provided, return current document
+            return DocumentDetail(
+                id=str(doc['id']),
+                source_path=doc['source_path'],
+                title=doc.get('title'),
+                total_pages=doc.get('total_pages', 0),
+                total_chunks=doc.get('total_chunks', 0),
+                total_images=doc.get('total_images', 0),
+                created_at=doc.get('created_at'),
+                stats=doc.get('stats', {}),
+                metadata=doc.get('metadata', {})
+            )
+
+        # Perform update
+        updated_doc = await repos.documents.update(doc_uuid, update_data)
+
+        logger.info(f"Updated document {document_id}: {list(update_data.keys())}")
+
+        return DocumentDetail(
+            id=str(updated_doc['id']),
+            source_path=updated_doc['source_path'],
+            title=updated_doc.get('title'),
+            total_pages=updated_doc.get('total_pages', 0),
+            total_chunks=updated_doc.get('total_chunks', 0),
+            total_images=updated_doc.get('total_images', 0),
+            created_at=updated_doc.get('created_at'),
+            stats=updated_doc.get('stats', {}),
+            metadata=updated_doc.get('metadata', {})
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Update document error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
 # Document Chunks
 # =============================================================================
 
@@ -138,16 +235,18 @@ async def get_document(
 )
 async def get_document_chunks(
     document_id: str = Path(..., description="Document UUID"),
-    page: Optional[int] = Query(None, ge=1, description="Filter by page number"),
+    page: int = Query(1, ge=1, description="Page number for pagination"),
+    page_size: int = Query(50, ge=1, le=200, description="Items per page"),
+    pdf_page: Optional[int] = Query(None, ge=1, description="Filter by PDF page number"),
     chunk_type: Optional[str] = Query(None, description="Filter by chunk type"),
     repos = Depends(get_repositories)
 ):
-    """Get chunks for a document."""
+    """Get chunks for a document with pagination."""
     try:
         doc_uuid = UUID(document_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID format")
-    
+
     try:
         # Check document exists
         exists = await repos.documents.exists(doc_uuid)
@@ -156,23 +255,37 @@ async def get_document_chunks(
                 status_code=404,
                 detail=f"Document not found: {document_id}"
             )
-        
+
+        # Calculate pagination offset
+        offset = (page - 1) * page_size
+
+        # Get total count first (database-level)
+        total = await repos.chunks.count_by_document(
+            document_id=doc_uuid,
+            page_number=pdf_page,
+            chunk_type=chunk_type
+        )
+
+        # Get paginated chunks from database (efficient - only loads requested page)
         chunks = await repos.chunks.get_by_document(
             document_id=doc_uuid,
-            page_number=page,
-            include_embedding=False
+            page_number=pdf_page,
+            include_embedding=False,
+            limit=page_size,
+            offset=offset
         )
-        
-        # Filter by type if specified
+
+        # Filter by type if specified (in case not filtered at DB level)
         if chunk_type:
             chunks = [c for c in chunks if c.get('chunk_type') == chunk_type]
-        
+
         return DocumentChunksResponse(
             document_id=document_id,
             chunks=[
                 ChunkItem(
                     id=str(c['id']),
                     content=c['content'],
+                    summary=c.get('summary'),
                     page_number=c.get('page_number'),
                     chunk_index=c.get('chunk_index'),
                     chunk_type=c.get('chunk_type'),
@@ -181,7 +294,7 @@ async def get_document_chunks(
                 )
                 for c in chunks
             ],
-            total=len(chunks)
+            total=total
         )
         
     except HTTPException:
@@ -202,16 +315,18 @@ async def get_document_chunks(
 )
 async def get_document_images(
     document_id: str = Path(..., description="Document UUID"),
-    page: Optional[int] = Query(None, ge=1, description="Filter by page number"),
+    page: int = Query(1, ge=1, description="Page number for pagination"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    pdf_page: Optional[int] = Query(None, ge=1, description="Filter by PDF page number"),
     include_decorative: bool = Query(False, description="Include decorative images"),
     repos = Depends(get_repositories)
 ):
-    """Get images for a document."""
+    """Get images for a document with pagination."""
     try:
         doc_uuid = UUID(document_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid document ID format")
-    
+
     try:
         exists = await repos.documents.exists(doc_uuid)
         if not exists:
@@ -219,14 +334,27 @@ async def get_document_images(
                 status_code=404,
                 detail=f"Document not found: {document_id}"
             )
-        
+
+        # Calculate pagination offset
+        offset = (page - 1) * page_size
+
+        # Get total count first (database-level for efficiency)
+        total = await repos.images.count_by_document(
+            document_id=doc_uuid,
+            page_number=pdf_page,
+            include_decorative=include_decorative
+        )
+
+        # Get paginated images from database (efficient)
         images = await repos.images.get_by_document(
             document_id=doc_uuid,
-            page_number=page,
+            page_number=pdf_page,
             include_decorative=include_decorative,
-            include_embedding=False
+            include_embedding=False,
+            limit=page_size,
+            offset=offset
         )
-        
+
         return {
             "document_id": document_id,
             "images": [
@@ -237,11 +365,12 @@ async def get_document_images(
                     "image_type": img.get('image_type'),
                     "is_decorative": img.get('is_decorative', False),
                     "caption": img.get('vlm_caption'),
+                    "caption_summary": img.get('caption_summary'),
                     "cuis": img.get('cuis', [])
                 }
                 for img in images
             ],
-            "total": len(images)
+            "total": total
         }
         
     except HTTPException:
@@ -306,7 +435,112 @@ async def get_document_stats(
 
 
 # =============================================================================
-# Delete Document
+# Bulk Delete Operations
+# =============================================================================
+
+from pydantic import BaseModel, Field
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request model for bulk delete operations."""
+    ids: List[str] = Field(..., description="List of document IDs to delete")
+
+
+class BulkDeleteResponse(BaseModel):
+    """Response for bulk delete operations."""
+    deleted: int
+    failed: List[str] = []
+    message: str
+
+
+@router.delete(
+    "/all",
+    response_model=BulkDeleteResponse,
+    summary="Delete all documents",
+    description="Delete ALL documents and cascading data. Use with extreme caution!"
+)
+async def delete_all_documents(
+    confirm: bool = Query(False, description="Must be true to confirm deletion"),
+    repos = Depends(get_repositories)
+):
+    """Delete all documents with cascade. Requires confirmation."""
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Must set confirm=true to delete all documents"
+        )
+
+    try:
+        # Get all document IDs
+        all_docs = await repos.documents.list_all_ids()
+        deleted_count = 0
+        failed = []
+
+        for doc_id in all_docs:
+            try:
+                await repos.documents.delete_with_cascade(doc_id)
+                deleted_count += 1
+            except Exception as e:
+                logger.error(f"Failed to delete document {doc_id}: {e}")
+                failed.append(str(doc_id))
+
+        logger.warning(f"Deleted ALL documents: {deleted_count} total, {len(failed)} failed")
+
+        return BulkDeleteResponse(
+            deleted=deleted_count,
+            failed=failed,
+            message=f"Deleted {deleted_count} documents" + (f", {len(failed)} failed" if failed else "")
+        )
+
+    except Exception as e:
+        logger.exception(f"Delete all documents error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "",
+    response_model=BulkDeleteResponse,
+    summary="Bulk delete documents",
+    description="Delete multiple documents by ID with cascade"
+)
+async def bulk_delete_documents(
+    request: BulkDeleteRequest,
+    repos = Depends(get_repositories)
+):
+    """Delete multiple documents by ID."""
+    if not request.ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    deleted_count = 0
+    failed = []
+
+    for doc_id_str in request.ids:
+        try:
+            doc_uuid = UUID(doc_id_str)
+            exists = await repos.documents.exists(doc_uuid)
+            if not exists:
+                failed.append(doc_id_str)
+                continue
+
+            await repos.documents.delete_with_cascade(doc_uuid)
+            deleted_count += 1
+        except ValueError:
+            failed.append(doc_id_str)
+        except Exception as e:
+            logger.error(f"Failed to delete document {doc_id_str}: {e}")
+            failed.append(doc_id_str)
+
+    logger.info(f"Bulk deleted {deleted_count} documents, {len(failed)} failed")
+
+    return BulkDeleteResponse(
+        deleted=deleted_count,
+        failed=failed,
+        message=f"Deleted {deleted_count} documents" + (f", {len(failed)} failed" if failed else "")
+    )
+
+
+# =============================================================================
+# Delete Single Document
 # =============================================================================
 
 @router.delete(
@@ -438,3 +672,101 @@ async def delete_document_images(
     except Exception as e:
         logger.exception(f"Delete images error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# Reindex Document
+# =============================================================================
+
+# Track reindex jobs
+_reindex_jobs: dict = {}
+
+
+@router.post(
+    "/{document_id}/reindex",
+    summary="Reindex document",
+    description="Re-run embedding and indexing for a document"
+)
+async def reindex_document(
+    document_id: str = Path(..., description="Document UUID"),
+    background_tasks: BackgroundTasks = None,
+    repos = Depends(get_repositories)
+):
+    """Re-run embedding and indexing for a document."""
+    import uuid as uuid_module
+
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid document ID format")
+
+    try:
+        # Verify document exists
+        doc = await repos.documents.get(doc_uuid)
+        if not doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not found: {document_id}"
+            )
+
+        job_id = str(uuid_module.uuid4())
+        _reindex_jobs[job_id] = {
+            "status": "queued",
+            "document_id": document_id,
+            "progress": 0
+        }
+
+        if background_tasks:
+            background_tasks.add_task(
+                _reindex_document_task,
+                document_id,
+                job_id,
+                repos
+            )
+
+        return {
+            "job_id": job_id,
+            "document_id": document_id,
+            "status": "queued",
+            "message": f"Reindexing document {doc.get('title', document_id)}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Reindex error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _reindex_document_task(document_id: str, job_id: str, repos):
+    """
+    Background task to reindex a document.
+
+    NOT YET IMPLEMENTED: This task currently does not re-embed chunks or update FAISS.
+    To re-index a document, delete it and re-ingest the source PDF.
+    """
+    try:
+        _reindex_jobs[job_id]["status"] = "running"
+        _reindex_jobs[job_id]["progress"] = 10
+
+        # NOT IMPLEMENTED: Full re-embedding would require:
+        # 1. Fetch all chunks for document
+        # 2. Re-generate embeddings via Voyage API
+        # 3. Update chunk embeddings in database
+        # 4. Rebuild FAISS indexes with new embeddings
+        #
+        # This is complex and expensive. For now, recommend delete + re-ingest.
+
+        _reindex_jobs[job_id]["status"] = "failed"
+        _reindex_jobs[job_id]["progress"] = 0
+        _reindex_jobs[job_id]["message"] = (
+            "Reindex not yet implemented. "
+            "To re-embed a document: delete it via DELETE /documents/{id}, "
+            "then re-upload via POST /api/v1/ingest/upload."
+        )
+        logger.warning(f"Reindex requested for {document_id} but not implemented")
+
+    except Exception as e:
+        logger.error(f"Reindex failed for {document_id}: {e}")
+        _reindex_jobs[job_id]["status"] = "failed"
+        _reindex_jobs[job_id]["message"] = str(e)

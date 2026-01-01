@@ -85,10 +85,13 @@ class SearchResultItem(BaseModel):
     document_id: str
     content: str
 
+    # Human-readable summary (pre-computed during ingestion)
+    summary: Optional[str] = Field(None, description="Brief summary of chunk content")
+
     # Metadata
     title: str = ""
     chunk_type: str  # Serialized from enum
-    page_start: int
+    page_start: Optional[int] = 0
     entity_names: List[str] = Field(default_factory=list)
     image_ids: List[str] = Field(default_factory=list)
 
@@ -284,7 +287,7 @@ class ConversationResponse(BaseModel):
 class DocumentSummary(BaseModel):
     """Document summary."""
     id: str
-    source_path: str
+    source_path: Optional[str] = None
     title: Optional[str] = None
     total_pages: int = 0
     total_chunks: int = 0
@@ -310,6 +313,7 @@ class ChunkItem(BaseModel):
     """Chunk summary."""
     id: str
     content: str
+    summary: Optional[str] = None
     page_number: Optional[int] = None
     chunk_index: Optional[int] = None
     chunk_type: Optional[str] = None

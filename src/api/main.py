@@ -14,6 +14,10 @@ Or:
 from dotenv import load_dotenv
 load_dotenv()  # Load .env file before anything else
 
+# Validate environment at startup (before anything else)
+from src.api.dependencies import validate_environment
+validate_environment(exit_on_error=True)
+
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -33,9 +37,12 @@ from src.api.routes import (
     documents_router,
     health_router,
     synthesis_router,
-    ingest_router
+    ingest_router,
+    entities_router,
+    indexes_router
 )
 from src.api.routes.images import router as images_router
+from src.api.routes.knowledge_graph import router as knowledge_graph_router
 
 # Configure logging
 logging.basicConfig(
@@ -67,7 +74,8 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Services initialized")
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
-        # Allow startup even with degraded services
+        # Fail fast - don't allow degraded startup that will cause 500 errors
+        raise RuntimeError(f"Cannot start API without database: {e}") from e
     
     yield
     
@@ -126,13 +134,17 @@ Currently open access. Production deployments should add authentication.
     )
     
     # Register routes
-    app.include_router(health_router)
+    # All main API routes use /api/v1 prefix for frontend compatibility
+    app.include_router(health_router, prefix="/api/v1")
     app.include_router(search_router, prefix="/api/v1")
     app.include_router(rag_router, prefix="/api/v1")
     app.include_router(documents_router, prefix="/api/v1")
+    app.include_router(entities_router, prefix="/api/v1")
+    app.include_router(indexes_router, prefix="/api/v1")
     app.include_router(ingest_router)  # Has /api/v1/ingest prefix
     app.include_router(synthesis_router)
     app.include_router(images_router)  # Image serving with security
+    app.include_router(knowledge_graph_router)  # Knowledge graph endpoints
     
     # Exception handlers
     @app.exception_handler(RequestValidationError)
@@ -180,9 +192,32 @@ Currently open access. Production deployments should add authentication.
             "name": settings.api_title,
             "version": settings.api_version,
             "docs": "/docs",
-            "health": "/health"
+            "health": "/api/v1/health"
         }
-    
+
+    # Image alias for /api/v1/images path (frontend compatibility)
+    from fastapi.responses import FileResponse
+    from pathlib import Path as FilePath
+    import os
+
+    IMAGE_DIR = FilePath(os.getenv("IMAGE_OUTPUT_DIR", "./output/images"))
+
+    @app.get("/api/v1/images/{file_path:path}", tags=["Images"])
+    async def serve_image_api_v1(file_path: str):
+        """Serve images via /api/v1/images path (frontend compatibility)."""
+        full_path = IMAGE_DIR / file_path
+        full_path = full_path.resolve()
+
+        if not full_path.is_relative_to(IMAGE_DIR.resolve()):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if not full_path.exists() or not full_path.is_file():
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        return FileResponse(full_path)
+
     return app
 
 
