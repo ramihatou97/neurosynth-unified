@@ -595,8 +595,9 @@ class NeuroExpertPatterns:
                 r"\b(C[1-7])\s*(segment)?\b",
                 # Circle of Willis segments
                 r"\b(A|M|P)[1-4]\s*(segment)?\b",
-                # Named arteries (abbreviated)
+                # Named arteries (abbreviated) - includes period-separated variants
                 r"\b(ICA|MCA|ACA|PCA|SCA|AICA|PICA|VA|BA)\b",
+                r"\b(I\.C\.A\.?|M\.C\.A\.?|A\.C\.A\.?|P\.C\.A\.?)\b",
                 # Communicating arteries
                 r"\b(anterior|posterior)\s+communicating\s+artery\b",
                 r"\b(ACoA|AComA|ACOM|PCoA|PComA|PCOM)\b",
@@ -646,7 +647,22 @@ class NeuroExpertPatterns:
                 r"\b(intracerebral\s+hemorrhage|ICH)\b",
                 r"\b(infarction|ischemia|stroke)\b",
             ],
-            
+
+            "PATHOLOGY_INFECTION": [
+                # CNS infections
+                r"\b(meningitis|encephalitis|ventriculitis|cerebritis)\b",
+                r"\b(brain\s+abscess|cerebral\s+abscess|intracranial\s+abscess)\b",
+                r"\b(epidural\s+abscess|subdural\s+empyema)\b",
+                # Spine infections
+                r"\b(discitis|osteomyelitis|spondylodiscitis)\b",
+                r"\b(spinal\s+epidural\s+abscess)\b",
+                # Specific pathogens/types
+                r"\b(tuberculoma|tuberculous\s+meningitis)\b",
+                r"\b(neurocysticercosis|cysticercosis)\b",
+                r"\b(toxoplasmosis|cryptococcal)\b",
+                r"\b(aspergillosis|mucormycosis)\b",
+            ],
+
             # =================================================================
             # SKULL BASE & CRANIAL NERVES
             # =================================================================
@@ -888,14 +904,26 @@ class NeuroExpertPatterns:
                 # Spatial relationships
                 r"\b(proximal|distal|superior|inferior|medial|lateral)\b",
                 r"\b(anterior|posterior|rostral|caudal|dorsal|ventral)\b",
-                # Grading scales
-                r"\b(Spetzler[-\s]?Martin|SM\s+grade)\b",
-                r"\b(Hunt[-\s]?Hess|H[-]?H\s+grade)\b",
-                r"\b(Fisher\s+grade|modified\s+Fisher)\b",
-                r"\b(WFNS\s+grade)\b",
-                r"\b(Karnofsky|KPS)\b",
-                r"\b(mRS|modified\s+Rankin)\b",
-                r"\b(GCS|Glasgow\s+Coma\s+Scale?)\b",
+                # Grading scales - Vascular
+                r"\b(Spetzler[-\s]?Martin|SM\s+grade)\s*[I-V1-5]?\b",
+                r"\b(Hunt[-\s]?Hess|H[-]?H\s+grade)\s*[I-V1-5]?\b",
+                r"\b(Fisher\s+grade|modified\s+Fisher)\s*[1-4]?\b",
+                r"\b(WFNS\s+grade)\s*[I-V1-5]?\b",
+                r"\b(BRVA|Borggreve)\b",  # AVM supplementary scale
+                # Grading scales - Functional
+                r"\b(Karnofsky|KPS)\s*\d*\b",
+                r"\b(mRS|modified\s+Rankin)\s*[0-6]?\b",
+                r"\b(GCS|Glasgow\s+Coma\s+Scale?)\s*\d*\b",
+                # Grading scales - Cranial Nerve
+                r"\b(House[-\s]?Brackmann|HB)\s*(?:grade)?\s*[I-VI1-6]?\b",
+                r"\b(Koos\s+grade)\s*[I-IV1-4]?\b",  # Vestibular schwannoma
+                # Grading scales - Spine
+                r"\b(Meyerding)\s*(?:grade)?\s*[I-V1-5]?\b",  # Spondylolisthesis
+                r"\b(Frankel|ASIA)\s*[A-E]?\b",  # Spinal cord injury
+                r"\b(Nurick)\s*(?:grade)?\s*[0-5]?\b",  # Cervical myelopathy
+                # Grading scales - Tumor
+                r"\b(WHO\s+grade)\s*[I-IV1-4]?\b",
+                r"\b(Simpson\s+grade)\s*[I-V1-5]?\b",  # Meningioma resection
             ],
             
             # =================================================================
@@ -981,13 +1009,42 @@ class NeuroExpertPatterns:
             "IAC": "Internal Auditory Canal",
             "IAM": "Internal Auditory Meatus",
             "DCI": "Delayed Cerebral Ischemia",
+
+            # Trigeminal divisions
+            "V1": "Ophthalmic Division (CN V1)",
+            "V2": "Maxillary Division (CN V2)",
+            "V3": "Mandibular Division (CN V3)",
+
+            # Grading scales
+            "HB": "House-Brackmann Grade",
+            "SM": "Spetzler-Martin Grade",
+
+            # Neuromonitoring
+            "IONM": "Intraoperative Neuromonitoring",
+            "MEP": "Motor Evoked Potentials",
+            "SSEP": "Somatosensory Evoked Potentials",
+            "BAEP": "Brainstem Auditory Evoked Potentials",
+            "EMG": "Electromyography",
+
+            # Radiosurgery
+            "SRS": "Stereotactic Radiosurgery",
+            "SRT": "Stereotactic Radiotherapy",
+            "LINAC": "Linear Accelerator",
+            "GK": "Gamma Knife",
+            "CK": "CyberKnife",
+
+            # Period-separated abbreviations
+            "I.C.A": "Internal Carotid Artery",
+            "M.C.A": "Middle Cerebral Artery",
+            "A.C.A": "Anterior Cerebral Artery",
+            "P.C.A": "Posterior Cerebral Artery",
         }
 
 
 class NeuroExpertTextExtractor:
     """
     Expert system for extracting and classifying neurosurgical entities.
-    
+
     Features:
     1. Pattern-based entity detection
     2. Context-aware ambiguity resolution
@@ -995,7 +1052,62 @@ class NeuroExpertTextExtractor:
     4. Confidence scoring
     5. Extraction caching for performance
     """
-    
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 3.3: PATTERN-SPECIFIC CONFIDENCE SCORES
+    # Higher confidence for domain-specific patterns, lower for generic/ambiguous
+    # ─────────────────────────────────────────────────────────────────────────
+
+    _PATTERN_CONFIDENCE = {
+        # High-specificity neurosurgical procedures (0.95)
+        "PROCEDURE_CRANIOTOMY": 0.95,
+        "PROCEDURE_SPINE": 0.95,
+        "PROCEDURE_TUMOR": 0.95,
+        "PROCEDURE_VASCULAR": 0.95,
+        "PROCEDURE_FUNCTIONAL": 0.95,
+        "PROCEDURE_ENDOSCOPIC": 0.95,
+
+        # Vascular anatomy - generally reliable (0.90)
+        "ANATOMY_VASCULAR_ARTERIAL": 0.90,
+        "ANATOMY_VASCULAR_VENOUS": 0.90,
+        "ANATOMY_VASCULAR_SINUS": 0.90,
+
+        # Skull base anatomy - domain-specific (0.90)
+        "ANATOMY_SKULL_BASE": 0.90,
+
+        # Neural structures (0.88)
+        "ANATOMY_NEURAL": 0.88,
+        "ANATOMY_CRANIAL_NERVE": 0.88,
+
+        # Pathology - high confidence (0.90)
+        "PATHOLOGY_TUMOR": 0.90,
+        "PATHOLOGY_VASCULAR": 0.90,
+        "PATHOLOGY_INFECTION": 0.88,
+        "PATHOLOGY": 0.85,
+
+        # Grading systems - very specific (0.92)
+        "GRADING_SCALE": 0.92,
+
+        # Spine levels - prone to false positives (C1-C7 ambiguity) (0.70)
+        "ANATOMY_SPINE_LEVEL": 0.70,
+        "ANATOMY_SPINE_BONE": 0.75,
+        "ANATOMY_SPINE_NEURAL": 0.80,
+
+        # Instruments - context-dependent (0.80)
+        "INSTRUMENT": 0.80,
+        "INSTRUMENT_MICROSCOPE": 0.85,
+        "INSTRUMENT_NEURONAVIGATION": 0.90,
+
+        # Measurements - very generic, prone to false positives (0.60)
+        "MEASUREMENT": 0.60,
+
+        # Imaging - reliable when matched (0.85)
+        "IMAGING": 0.85,
+
+        # Abbreviations - need context (0.75)
+        "ABBREVIATION": 0.75,
+    }
+
     def __init__(
         self,
         config_path: Optional[Path] = None,
@@ -1072,6 +1184,9 @@ class NeuroExpertTextExtractor:
                     context_end = min(len(text), end + self.context_chars)
                     context = text[context_start:context_end]
                     
+                    # Phase 3.3: Pattern-specific confidence based on category
+                    base_confidence = self._PATTERN_CONFIDENCE.get(category, 0.85)
+
                     # Create entity
                     entity = NeuroEntity(
                         text=entity_text.strip(),
@@ -1079,7 +1194,7 @@ class NeuroExpertTextExtractor:
                         normalized=self._normalize_entity(entity_text),
                         start=start,
                         end=end,
-                        confidence=0.9,
+                        confidence=base_confidence,
                         context_snippet=context
                     )
                     
@@ -1107,10 +1222,65 @@ class NeuroExpertTextExtractor:
         
         return text_clean
     
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 3.1: WEIGHTED DISAMBIGUATION SCORING
+    # Higher weights for more domain-specific/definitive evidence terms
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # C-Level (C1-C7) disambiguation weights
+    _C_LEVEL_VASCULAR_WEIGHTS = {
+        "aneurysm": 4, "carotid": 3, "ica": 3, "segment": 2, "ophthalmic": 3,
+        "clinoid": 3, "cavernous": 3, "petrous": 2, "artery": 2, "dissection": 2
+    }
+    _C_LEVEL_SPINE_WEIGHTS = {
+        "vertebra": 3, "cervical": 2, "fracture": 3, "fusion": 3, "laminectomy": 3,
+        "foraminotomy": 3, "disc": 2, "pedicle": 3, "spine": 2, "spinal": 2,
+        "root": 2, "level": 1, "bone": 2, "acdf": 4, "corpectomy": 4
+    }
+
+    # M1 disambiguation weights
+    _M1_VASCULAR_WEIGHTS = {
+        "aneurysm": 4, "mca": 4, "bifurcation": 3, "artery": 3, "segment": 2,
+        "clipping": 3, "middle cerebral": 4, "lenticulostriate": 3
+    }
+    _M1_CORTEX_WEIGHTS = {
+        "cortex": 3, "motor": 3, "precentral": 4, "gyrus": 2, "homunculus": 3,
+        "mapping": 2, "stimulation": 2, "eloquent": 2
+    }
+
+    # Clip disambiguation weights
+    _CLIP_ANEURYSM_WEIGHTS = {
+        "aneurysm": 4, "neck": 2, "dome": 3, "yasargil": 4, "sugita": 4,
+        "fenestrated": 3, "temporary": 2, "permanent": 2, "titanium": 2
+    }
+    _CLIP_SKIN_WEIGHTS = {
+        "scalp": 3, "raney": 4, "skin": 2, "closure": 2, "drape": 2, "hemostasis": 2
+    }
+
+    # SCA disambiguation weights
+    _SCA_ARTERY_WEIGHTS = {
+        "artery": 3, "cerebellar": 3, "aneurysm": 4, "vessel": 2, "superior": 2,
+        "trigeminal": 2, "microvascular": 3, "decompression": 2
+    }
+    _SCA_ATAXIA_WEIGHTS = {
+        "ataxia": 4, "spinocerebellar": 4, "genetic": 3, "hereditary": 3,
+        "sca1": 4, "sca2": 4, "sca3": 4, "machado": 3, "friedrich": 3
+    }
+
+    # Foramen disambiguation weights
+    _FORAMEN_SKULL_WEIGHTS = {
+        "skull base": 4, "middle fossa": 3, "trigeminal": 3, "ovale": 3,
+        "rotundum": 3, "spinosum": 3, "lacerum": 2, "magnum": 3, "jugular": 3
+    }
+    _FORAMEN_SPINE_WEIGHTS = {
+        "vertebra": 3, "intervertebral": 3, "nerve root": 3, "neural": 2,
+        "stenosis": 2, "foraminotomy": 3, "disc": 2
+    }
+
     def _resolve_ambiguity(self, entity: NeuroEntity, full_text: str):
         """
-        Adjust category based on context.
-        
+        Adjust category based on weighted context scoring.
+
         Critical ambiguities:
         - C1-C7: Vertebral level vs ICA segment
         - Clip: Skin clip vs Aneurysm clip
@@ -1118,23 +1288,19 @@ class NeuroExpertTextExtractor:
         - Foramen: Skull base vs Spine
         - M1: MCA segment vs Primary motor cortex
         - SCA: Superior cerebellar artery vs Spinocerebellar ataxia
+
+        Uses weighted evidence scoring for improved accuracy (Phase 3.1).
         """
         context = entity.context_snippet.lower()
-        
+
+        def weighted_score(weights: dict, ctx: str) -> int:
+            """Calculate weighted score for evidence terms in context."""
+            return sum(weight for term, weight in weights.items() if term in ctx)
+
         # Ambiguity 1: C-Levels (C1-C7)
         if re.match(r"^[Cc][1-7]$", entity.text):
-            vascular_evidence = [
-                "ica", "carotid", "artery", "aneurysm", "segment",
-                "clinoid", "ophthalmic", "cavernous", "petrous"
-            ]
-            spine_evidence = [
-                "vertebra", "bone", "fracture", "spine", "spinal",
-                "cervical", "root", "disc", "pedicle", "level",
-                "fusion", "laminectomy", "foraminotomy"
-            ]
-            
-            vascular_score = sum(1 for w in vascular_evidence if w in context)
-            spine_score = sum(1 for w in spine_evidence if w in context)
+            vascular_score = weighted_score(self._C_LEVEL_VASCULAR_WEIGHTS, context)
+            spine_score = weighted_score(self._C_LEVEL_SPINE_WEIGHTS, context)
             
             if vascular_score > spine_score:
                 entity.category = "ANATOMY_VASCULAR_ARTERIAL"
@@ -1148,71 +1314,72 @@ class NeuroExpertTextExtractor:
                 entity.category = "ANATOMY_SPINE_BONE"
                 entity.confidence = 0.6
         
-        # Ambiguity 2: "Clip"
+        # Ambiguity 2: "Clip" - weighted scoring
         if "clip" in entity.text.lower():
-            aneurysm_evidence = [
-                "aneurysm", "neck", "dome", "temporary", "permanent",
-                "yasargil", "sugita", "fenestrated"
-            ]
-            skin_evidence = ["scalp", "drape", "raney", "skin", "closure"]
-            
-            if any(w in context for w in aneurysm_evidence):
-                entity.category = "INSTRUMENT"
-                entity.confidence = 0.95
-            elif any(w in context for w in skin_evidence):
-                entity.category = "INSTRUMENT"
-                entity.confidence = 0.9
-        
-        # Ambiguity 3: "Root"
-        if "root" in entity.text.lower():
-            nerve_evidence = ["nerve", "dorsal", "ventral", "spinal", "compression"]
-            math_evidence = ["square", "equation", "calculation"]
-            
-            if any(w in context for w in nerve_evidence):
-                entity.category = "ANATOMY_SPINE_NEURAL"
-                entity.confidence = 0.95
-            elif any(w in context for w in math_evidence):
-                entity.confidence = 0.1
-        
-        # Ambiguity 4: "Foramen"
-        if "foramen" in entity.text.lower():
-            skull_base_evidence = [
-                "skull base", "middle fossa", "trigeminal", "ovale",
-                "rotundum", "spinosum", "lacerum", "magnum"
-            ]
-            spine_evidence = ["vertebra", "intervertebral", "nerve root", "neural"]
-            
-            if any(w in context for w in skull_base_evidence):
-                entity.category = "ANATOMY_SKULL_BASE"
-                entity.confidence = 0.95
-            elif any(w in context for w in spine_evidence):
-                entity.category = "ANATOMY_SPINE_BONE"
-                entity.confidence = 0.9
-        
-        # Ambiguity 5: "M1"
-        if entity.text.upper() == "M1":
-            vascular_evidence = ["mca", "artery", "segment", "bifurcation", "aneurysm"]
-            cortex_evidence = ["cortex", "motor", "gyrus", "precentral", "homunculus"]
-            
-            if any(w in context for w in vascular_evidence):
-                entity.category = "ANATOMY_VASCULAR_ARTERIAL"
-                entity.confidence = 0.95
-            elif any(w in context for w in cortex_evidence):
-                entity.category = "ANATOMY_NEURAL"
-                entity.confidence = 0.9
-                entity.normalized = "Primary Motor Cortex (M1)"
-        
-        # Ambiguity 6: "SCA"
-        if entity.text.upper() == "SCA":
-            artery_evidence = ["artery", "cerebellar", "aneurysm", "vessel"]
-            ataxia_evidence = ["ataxia", "spinocerebellar", "genetic", "hereditary"]
+            aneurysm_score = weighted_score(self._CLIP_ANEURYSM_WEIGHTS, context)
+            skin_score = weighted_score(self._CLIP_SKIN_WEIGHTS, context)
 
-            if any(w in context for w in artery_evidence):
+            if aneurysm_score > skin_score and aneurysm_score > 0:
+                entity.category = "INSTRUMENT"
+                entity.confidence = min(0.95, 0.7 + aneurysm_score * 0.05)
+                entity.normalized = "Aneurysm Clip"
+            elif skin_score > 0:
+                entity.category = "INSTRUMENT"
+                entity.confidence = min(0.9, 0.7 + skin_score * 0.05)
+                entity.normalized = "Scalp Clip"
+
+        # Ambiguity 3: "Root" - weighted scoring
+        if "root" in entity.text.lower():
+            nerve_weights = {"nerve": 3, "dorsal": 3, "ventral": 3, "spinal": 2, "compression": 2, "radiculopathy": 4}
+            math_weights = {"square": 4, "equation": 4, "calculation": 3, "mathematical": 4}
+
+            nerve_score = weighted_score(nerve_weights, context)
+            math_score = weighted_score(math_weights, context)
+
+            if nerve_score > math_score and nerve_score > 0:
+                entity.category = "ANATOMY_SPINE_NEURAL"
+                entity.confidence = min(0.95, 0.7 + nerve_score * 0.05)
+            elif math_score > 0:
+                entity.confidence = 0.1  # Likely not medical
+
+        # Ambiguity 4: "Foramen" - weighted scoring
+        if "foramen" in entity.text.lower():
+            skull_score = weighted_score(self._FORAMEN_SKULL_WEIGHTS, context)
+            spine_score = weighted_score(self._FORAMEN_SPINE_WEIGHTS, context)
+
+            if skull_score > spine_score and skull_score > 0:
+                entity.category = "ANATOMY_SKULL_BASE"
+                entity.confidence = min(0.95, 0.7 + skull_score * 0.05)
+            elif spine_score > 0:
+                entity.category = "ANATOMY_SPINE_BONE"
+                entity.confidence = min(0.9, 0.7 + spine_score * 0.05)
+
+        # Ambiguity 5: "M1" - weighted scoring
+        if entity.text.upper() == "M1":
+            vascular_score = weighted_score(self._M1_VASCULAR_WEIGHTS, context)
+            cortex_score = weighted_score(self._M1_CORTEX_WEIGHTS, context)
+
+            if vascular_score > cortex_score:
                 entity.category = "ANATOMY_VASCULAR_ARTERIAL"
-                entity.confidence = 0.95
-            elif any(w in context for w in ataxia_evidence):
+                entity.confidence = min(0.95, 0.7 + vascular_score * 0.05)
+                entity.normalized = "M1 Segment (MCA)"
+            elif cortex_score > 0:
+                entity.category = "ANATOMY_NEURAL"
+                entity.confidence = min(0.9, 0.7 + cortex_score * 0.05)
+                entity.normalized = "Primary Motor Cortex (M1)"
+
+        # Ambiguity 6: "SCA" - weighted scoring
+        if entity.text.upper() == "SCA":
+            artery_score = weighted_score(self._SCA_ARTERY_WEIGHTS, context)
+            ataxia_score = weighted_score(self._SCA_ATAXIA_WEIGHTS, context)
+
+            if artery_score > ataxia_score:
+                entity.category = "ANATOMY_VASCULAR_ARTERIAL"
+                entity.confidence = min(0.95, 0.7 + artery_score * 0.05)
+                entity.normalized = "Superior Cerebellar Artery"
+            elif ataxia_score > 0:
                 entity.category = "PATHOLOGY"
-                entity.confidence = 0.9
+                entity.confidence = min(0.9, 0.7 + ataxia_score * 0.05)
                 entity.normalized = "Spinocerebellar Ataxia"
 
         # ─────────────────────────────────────────────────────────────────────────

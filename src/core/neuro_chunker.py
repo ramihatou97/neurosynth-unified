@@ -345,11 +345,17 @@ def get_title_entity(entities: List) -> Optional[object]:
 
 @dataclass
 class ChunkerConfig:
-    """Configuration for the semantic chunker."""
-    target_tokens: int = 500      # Soft limit (try to stay under)
-    max_tokens: int = 800         # Hard limit (never exceed)
-    min_tokens: int = 100         # Minimum chunk size
-    overlap_sentences: int = 1    # Sentences to overlap between chunks
+    """Configuration for the semantic chunker (synthesis-optimized)."""
+    target_tokens: int = 600      # Soft limit - increased for richer context
+    max_tokens: int = 1000        # Hard limit - increased for complete thoughts
+    min_tokens: int = 150         # Minimum chunk size - avoid fragments
+    overlap_sentences: int = 2    # Sentences to overlap - better continuity
+
+    # Type-specific limits (used when chunk type is detected early)
+    procedure_target_tokens: int = 700    # Procedures need more context
+    anatomy_target_tokens: int = 550      # Anatomy can be more concise
+    pathology_target_tokens: int = 650    # Pathology needs clinical context
+    clinical_target_tokens: int = 600     # Clinical matches default
 
 
 class NeuroSemanticChunker:
@@ -561,7 +567,57 @@ class NeuroSemanticChunker:
         if re.search(r"[:\(]\s*\d\)", prev_sent):
             if re.search(r"^\d\)", next_sent.strip()):
                 return False
-        
+
+        # ===== NEW SYNTHESIS-OPTIMIZED RULES =====
+
+        # Rule 7: Surgical step sequence
+        # "The dura is opened." + "The tumor is then visualized." = Don't split
+        step_markers = ["then", "next", "subsequently", "following this", "after this"]
+        if any(f" {m} " in f" {next_lower} " or next_lower.startswith(m) for m in step_markers):
+            surgical_actions = ["is opened", "is exposed", "is identified", "is dissected",
+                              "is retracted", "is incised", "is elevated", "is removed"]
+            if any(a in prev_lower for a in surgical_actions):
+                return False
+
+        # Rule 8: Anatomy-pathology relationship
+        # "The tumor involves the M1 segment." + "This results in motor deficit." = Don't split
+        pathology_verbs = ["involves", "compresses", "displaces", "encases", "infiltrates",
+                          "invades", "erodes", "obstructs", "occludes"]
+        if any(v in prev_lower for v in pathology_verbs):
+            effect_markers = ["results in", "causing", "leading to", "produces", "manifests as"]
+            if any(e in next_lower for e in effect_markers):
+                return False
+
+        # Rule 9: Instrument-technique pairing
+        # "The bipolar is used to coagulate." + "Care is taken to avoid the nerve." = Don't split
+        instruments = ["bipolar", "suction", "dissector", "microscope", "drill",
+                      "clip", "cautery", "retractor", "speculum", "forceps"]
+        if any(i in prev_lower for i in instruments):
+            technique_markers = ["care is taken", "to avoid", "to prevent", "ensuring",
+                               "while preserving", "without injuring"]
+            if any(t in next_lower for t in technique_markers):
+                return False
+
+        # Rule 10: Grading/classification context
+        # "The lesion was Spetzler-Martin grade III." + "This indicates high risk." = Don't split
+        grading_terms = ["grade", "score", "spetzler", "hunt-hess", "fisher", "who grade",
+                        "house-brackmann", "karnofsky", "modified rankin"]
+        if any(g in prev_lower for g in grading_terms):
+            interpretation_markers = ["indicates", "suggests", "means", "implies",
+                                     "associated with", "correlates with", "predicts"]
+            if any(i in next_lower for i in interpretation_markers):
+                return False
+
+        # Rule 11: Complication-prevention pairs
+        # "Injury to the nerve causes weakness." + "This is avoided by careful dissection." = Don't split
+        complication_words = ["injury", "damage", "complication", "deficit", "hemorrhage",
+                             "infarction", "ischemia", "paralysis", "blindness"]
+        if any(c in prev_lower for c in complication_words):
+            prevention_markers = ["avoided by", "prevented by", "minimized by", "reduced by",
+                                "to prevent", "to avoid", "by careful", "through meticulous"]
+            if any(p in next_lower for p in prevention_markers):
+                return False
+
         return True
     
     def _finalize_chunk(
