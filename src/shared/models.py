@@ -425,6 +425,8 @@ class SemanticChunk:
     embedding_dim: Optional[int] = None
     cuis: List[str] = field(default_factory=list)
     umls_entities: List[UMLSEntity] = field(default_factory=list)
+    # Human-readable summary (Stage 4.5)
+    summary: Optional[str] = None
     # Phase 2: Database fields
     db_id: Optional[UUID] = None
     contextual_content: Optional[str] = None
@@ -596,6 +598,8 @@ class ExtractedImage:
     vlm_caption: Optional[str] = None
     vlm_image_type: Optional[str] = None
     caption_embedding: Optional[np.ndarray] = None
+    # Human-readable caption summary (Stage 8.5)
+    caption_summary: Optional[str] = None
     cuis: List[str] = field(default_factory=list)
     umls_entities: List[UMLSEntity] = field(default_factory=list)
     link_strengths: Dict[str, float] = field(default_factory=dict)
@@ -825,7 +829,7 @@ class ExtractedTable:
 
 @dataclass
 class SearchResult:
-    """Result from hybrid search."""
+    """Result from hybrid search with quality metrics."""
     chunk_id: str
     document_id: str
     content: str
@@ -841,6 +845,19 @@ class SearchResult:
     document_title: Optional[str] = None
     cuis: List[str] = field(default_factory=list)  # UMLS Concept Unique Identifiers
     images: List[ExtractedImage] = field(default_factory=list)
+    # Quality scores (populated from chunks table)
+    readability_score: float = 0.0
+    coherence_score: float = 0.0
+    completeness_score: float = 0.0
+
+    @property
+    def quality_score(self) -> float:
+        """Computed aggregate quality score (weighted average)."""
+        return (
+            self.readability_score * 0.25 +
+            self.coherence_score * 0.40 +
+            self.completeness_score * 0.35
+        )
 
 
 @dataclass

@@ -340,32 +340,41 @@ class ContextAdapter:
         topic: str,
         search_results: List["SearchResult"],  # Phase 1 model
         template_type: TemplateType,
+        min_quality_score: float = 0.4,  # Minimum quality threshold
     ) -> Dict[str, Any]:
         """
-        Adapt SearchResult list into template context.
-        
+        Adapt SearchResult list into template context with quality filtering.
+
         SearchResult ALREADY has all fields - just reorganize for templates.
+        Quality scores are used to filter and weight chunks.
         """
         sections_content: Dict[str, List[Dict]] = {
             section[0]: [] for section in TEMPLATE_SECTIONS.get(template_type, [])
         }
-        
+
         all_sources = []
         image_catalog = []
-        
+        filtered_count = 0
+
         for result in search_results:
+            # Quality filtering - skip low quality chunks
+            quality_score = getattr(result, 'quality_score', 0.7)  # Default if not set
+            if quality_score < min_quality_score:
+                filtered_count += 1
+                continue
+
             # Access SearchResult fields directly (no conversion!)
             authority = self.detect_authority_from_title(result.document_title)
-            
+
             # Use existing authority_score from SearchResult, or derive from title
             authority_score = result.authority_score
             if authority_score == 1.0:  # Default value, might need override
                 authority_score = AUTHORITY_SCORES.get(authority, 0.6)
-            
+
             # Classify into section
             section = self.classify_section(result.content, template_type)
-            
-            # Build chunk data (all from SearchResult)
+
+            # Build chunk data (all from SearchResult) - quality-weighted combined score
             chunk_data = {
                 "id": result.chunk_id,
                 "content": result.content,
@@ -378,7 +387,8 @@ class ContextAdapter:
                 "semantic_score": result.semantic_score,
                 "keyword_score": result.keyword_score,
                 "final_score": result.final_score,
-                "combined_score": result.final_score * authority_score,
+                "quality_score": quality_score,
+                "combined_score": result.final_score * authority_score * quality_score,  # Quality-weighted
                 "entity_names": result.entity_names,
             }
             

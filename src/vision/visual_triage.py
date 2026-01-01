@@ -742,6 +742,7 @@ class TriageAwareVLMCaptioner:
 
         # Process non-skipped images in batch
         vlm_results = []
+        indices = []
         if to_process:
             indices, inputs_to_process = zip(*to_process)
             vlm_results = await self.vlm.caption_batch(

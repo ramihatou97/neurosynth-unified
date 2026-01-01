@@ -30,11 +30,19 @@ Usage:
 """
 
 import logging
-from typing import List, Dict, Any, Optional, AsyncGenerator
+from typing import List, Dict, Any, Optional, AsyncGenerator, Callable, Awaitable
 from dataclasses import dataclass, field
 from datetime import datetime
 import asyncio
 import json
+
+# Graph-RAG integration
+try:
+    from src.retrieval.graph_rag import GraphRAGContext
+    from src.core.relation_extractor import NeuroRelationExtractor
+    HAS_GRAPH_RAG = True
+except ImportError:
+    HAS_GRAPH_RAG = False
 
 from src.rag.context import (
     ContextAssembler,
@@ -44,8 +52,22 @@ from src.rag.context import (
     CitationExtractor,
     ContextFormat
 )
+from src.utils.circuit_breaker import (
+    CircuitBreaker,
+    CircuitOpenError,
+    retry_with_backoff
+)
 
 logger = logging.getLogger(__name__)
+
+# Global circuit breaker for Claude API
+claude_breaker = CircuitBreaker(
+    name="claude",
+    failure_threshold=3,
+    success_threshold=2,
+    reset_timeout=60.0,
+    timeout=30.0
+)
 
 
 # =============================================================================
@@ -112,6 +134,12 @@ class RAGConfig:
     stream: bool = False
     include_sources: bool = True
 
+    # Graph-RAG settings
+    use_graph_rag: bool = True
+    graph_hop_limit: int = 2
+    graph_max_edges: int = 10
+    graph_use_mmr: bool = True
+
 
 # =============================================================================
 # Prompts
@@ -176,22 +204,28 @@ class RAGEngine:
         search_service,
         api_key: str = None,
         config: RAGConfig = None,
-        system_prompt: str = None
+        system_prompt: str = None,
+        db_pool=None,
+        embed_fn: Callable[[str], Awaitable[list[float]]] = None,
     ):
         """
         Initialize RAG engine.
-        
+
         Args:
             search_service: SearchService instance
             api_key: Anthropic API key
             config: RAG configuration
             system_prompt: Custom system prompt (or use medical default)
+            db_pool: Database connection pool for Graph-RAG
+            embed_fn: Async embedding function for Graph-RAG
         """
         self.search = search_service
         self.api_key = api_key
         self.config = config or RAGConfig()
         self.system_prompt = system_prompt or SYSTEM_PROMPT_MEDICAL
-        
+        self.db_pool = db_pool
+        self.embed_fn = embed_fn
+
         # Initialize context assembler
         self.assembler = ContextAssembler(
             max_context_tokens=self.config.max_context_tokens,
@@ -199,10 +233,36 @@ class RAGEngine:
             max_images=self.config.max_images,
             format=self.config.context_format
         )
-        
+
         # Claude client (lazy initialized)
         self._client = None
         self._async_client = None
+
+        # Graph-RAG components (lazy initialized)
+        self._graph_ctx: Optional["GraphRAGContext"] = None
+        self._entity_extractor: Optional["NeuroRelationExtractor"] = None
+        self._graph_initialized = False
+
+        if self.config.use_graph_rag and HAS_GRAPH_RAG and db_pool and embed_fn:
+            try:
+                self._entity_extractor = NeuroRelationExtractor()
+                self._graph_ctx = GraphRAGContext(
+                    db_pool=db_pool,
+                    embed_fn=embed_fn,
+                )
+                logger.info("Graph-RAG context initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Graph-RAG: {e}")
+
+    async def initialize(self):
+        """Initialize async components (Graph-RAG)."""
+        if self._graph_ctx and not self._graph_initialized:
+            try:
+                await self._graph_ctx.initialize()
+                self._graph_initialized = True
+                logger.info("Graph-RAG async components initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Graph-RAG async: {e}")
     
     def _get_client(self):
         """Get synchronous Anthropic client."""
@@ -229,11 +289,12 @@ class RAGEngine:
         include_citations: bool = None,
         include_images: bool = True,
         stream: bool = None,
-        conversation_history: List[Dict] = None
+        conversation_history: List[Dict] = None,
+        use_graph: bool = None,
     ) -> RAGResponse:
         """
         Ask a question and get an answer with citations.
-        
+
         Args:
             question: User question
             filters: SearchFilters for context retrieval
@@ -241,16 +302,35 @@ class RAGEngine:
             include_images: Include linked images
             stream: Stream response (returns AsyncGenerator if True)
             conversation_history: Previous messages for multi-turn
-        
+            use_graph: Use Graph-RAG for context expansion (default: config.use_graph_rag)
+
         Returns:
             RAGResponse with answer, citations, and metadata
         """
         import time
         start_time = time.time()
-        
+
         include_citations = include_citations if include_citations is not None else self.config.include_citations
         stream = stream if stream is not None else self.config.stream
-        
+        use_graph = use_graph if use_graph is not None else self.config.use_graph_rag
+
+        # Step 0: Extract entities and get graph context (if Graph-RAG enabled)
+        graph_context = None
+        entities = []
+        if use_graph and self._graph_ctx and self._entity_extractor:
+            try:
+                entities = self._extract_entities_from_question(question)
+                if entities:
+                    graph_context = await self._graph_ctx.get_context(
+                        question=question,
+                        entities=entities,
+                        hop_limit=self.config.graph_hop_limit,
+                        use_mmr=self.config.graph_use_mmr,
+                    )
+                    logger.debug(f"Graph-RAG: {len(entities)} entities, {len(graph_context.get('edges', []))} edges")
+            except Exception as e:
+                logger.warning(f"Graph-RAG context failed: {e}")
+
         # Step 1: Search for relevant context
         search_start = time.time()
         search_response = await self.search.search(
@@ -262,7 +342,7 @@ class RAGEngine:
             rerank=self.config.enable_rerank
         )
         search_time = int((time.time() - search_start) * 1000)
-        
+
         # Step 2: Assemble context
         context_start = time.time()
         context = self.assembler.assemble(
@@ -270,9 +350,9 @@ class RAGEngine:
             query=question
         )
         context_time = int((time.time() - context_start) * 1000)
-        
-        # Step 3: Build prompt
-        prompt = self._build_prompt(question, context, include_images)
+
+        # Step 3: Build prompt (with graph context if available)
+        prompt = self._build_prompt(question, context, include_images, graph_context)
         
         # Step 4: Generate answer
         if stream:
@@ -350,33 +430,74 @@ class RAGEngine:
         )
     
     # =========================================================================
+    # Entity Extraction (for Graph-RAG)
+    # =========================================================================
+
+    def _extract_entities_from_question(self, question: str) -> List[str]:
+        """
+        Extract medical entities from question for Graph-RAG.
+
+        Uses spaCy noun chunks + abbreviation expansion.
+        """
+        if not self._entity_extractor:
+            return []
+
+        try:
+            doc = self._entity_extractor.nlp(question)
+            entities = []
+
+            # Extract noun chunks
+            for chunk in doc.noun_chunks:
+                normalized = self._entity_extractor.normalize_entity(chunk.text)
+                if len(normalized) > 2:  # Skip tiny fragments
+                    entities.append(normalized)
+
+            # Also check for known medical abbreviations
+            known_abbrevs = ["MCA", "ACA", "PCA", "GBM", "SAH", "ICH", "AVM", "DBS", "EVD"]
+            for token in doc:
+                if token.text.upper() in known_abbrevs:
+                    normalized = self._entity_extractor.normalize_entity(token.text)
+                    entities.append(normalized)
+
+            return list(set(entities))
+        except Exception as e:
+            logger.warning(f"Entity extraction failed: {e}")
+            return []
+
+    # =========================================================================
     # Prompt Building
     # =========================================================================
-    
+
     def _build_prompt(
         self,
         question: str,
         context: AssembledContext,
-        include_images: bool = True
+        include_images: bool = True,
+        graph_context: Optional[Dict] = None,
     ) -> str:
-        """Build user prompt with context."""
+        """Build user prompt with context and optional graph relationships."""
+        # Build graph context section
+        graph_section = ""
+        if graph_context and graph_context.get("prompt_context"):
+            graph_section = f"\n\n{graph_context['prompt_context']}"
+
         if include_images and context.images:
             # Format images
             image_lines = []
             for i, img in enumerate(context.images, 1):
                 caption = img.caption or "No caption"
                 image_lines.append(f"Image {i}: {caption}")
-            
+
             images_text = "\n".join(image_lines)
-            
+
             return USER_PROMPT_WITH_IMAGES.format(
-                context=context.text,
+                context=context.text + graph_section,
                 images=images_text,
                 question=question
             )
         else:
             return USER_PROMPT_TEMPLATE.format(
-                context=context.text,
+                context=context.text + graph_section,
                 question=question
             )
     
@@ -389,26 +510,43 @@ class RAGEngine:
         prompt: str,
         conversation_history: List[Dict] = None
     ) -> str:
-        """Generate response using Claude."""
+        """Generate response using Claude with circuit breaker protection."""
         client = self._get_async_client()
-        
+
         # Build messages
         messages = []
-        
+
         if conversation_history:
             messages.extend(conversation_history)
-        
+
         messages.append({"role": "user", "content": prompt})
-        
-        response = await client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
-            system=self.system_prompt,
-            messages=messages
+
+        try:
+            async with claude_breaker:
+                response = await client.messages.create(
+                    model=self.config.model,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                    system=self.system_prompt,
+                    messages=messages
+                )
+                return response.content[0].text
+
+        except CircuitOpenError as e:
+            logger.warning(f"Claude circuit open: {e}")
+            return self._fallback_response(prompt)
+        except Exception as e:
+            logger.error(f"Claude API error: {e}")
+            raise
+
+    def _fallback_response(self, prompt: str) -> str:
+        """Generate fallback response when Claude is unavailable."""
+        return (
+            "I'm currently unable to generate a response. "
+            "The AI service is temporarily unavailable. "
+            "Please try again in a few moments.\n\n"
+            "In the meantime, you can review the context documents directly."
         )
-        
-        return response.content[0].text
     
     async def _stream_response(
         self,
@@ -419,32 +557,43 @@ class RAGEngine:
         context_time: int,
         conversation_history: List[Dict] = None
     ) -> AsyncGenerator[str, None]:
-        """Stream response tokens."""
+        """Stream response tokens with circuit breaker protection."""
         client = self._get_async_client()
-        
+
         messages = []
         if conversation_history:
             messages.extend(conversation_history)
         messages.append({"role": "user", "content": prompt})
-        
+
         full_response = ""
-        
-        async with client.messages.stream(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
-            system=self.system_prompt,
-            messages=messages
-        ) as stream:
-            async for text in stream.text_stream:
-                full_response += text
-                yield text
-        
+
+        try:
+            async with claude_breaker:
+                async with client.messages.stream(
+                    model=self.config.model,
+                    max_tokens=self.config.max_tokens,
+                    temperature=self.config.temperature,
+                    system=self.system_prompt,
+                    messages=messages
+                ) as stream:
+                    async for text in stream.text_stream:
+                        full_response += text
+                        yield text
+
+        except CircuitOpenError as e:
+            logger.warning(f"Claude circuit open during streaming: {e}")
+            yield self._fallback_response(prompt)
+            full_response = self._fallback_response(prompt)
+        except Exception as e:
+            logger.error(f"Claude streaming error: {e}")
+            yield f"Error: {str(e)}"
+            return
+
         # After streaming, yield final metadata as JSON
         used_citations = CitationExtractor.get_used_citations(
             full_response, context.citations
         )
-        
+
         metadata = {
             "type": "metadata",
             "citations": [c.to_dict() for c in context.citations],
@@ -453,7 +602,7 @@ class RAGEngine:
             "search_time_ms": search_time,
             "context_time_ms": context_time
         }
-        
+
         yield f"\n\n<!-- RAG_METADATA: {json.dumps(metadata)} -->"
     
     # =========================================================================

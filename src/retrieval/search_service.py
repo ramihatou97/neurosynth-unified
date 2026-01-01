@@ -29,6 +29,7 @@ Usage:
 """
 
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -375,6 +376,7 @@ class SearchService:
 
         # ADAPTED: Query using actual database schema column names
         # Your schema: start_page, topic_tags, entity_mentions, specialty_relevance
+        # Now includes quality scores for synthesis filtering
         query = f"""
             SELECT
                 c.id,
@@ -386,7 +388,10 @@ class SearchService:
                 c.entity_mentions,
                 c.specialty_relevance,
                 d.title AS document_title,
-                COALESCE(d.authority_score, 1.0) AS authority_score
+                COALESCE(d.authority_score, 1.0) AS authority_score,
+                COALESCE(c.readability_score, 0.0) AS readability_score,
+                COALESCE(c.coherence_score, 0.0) AS coherence_score,
+                COALESCE(c.completeness_score, 0.0) AS completeness_score
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
             WHERE {where_clause}
@@ -416,6 +421,7 @@ class SearchService:
                     pass
 
             # ADAPTED: Populate SearchResult using actual schema fields
+            # Now includes quality scores for synthesis filtering
             results.append(SearchResult(
                 chunk_id=row_id,
                 document_id=str(row['document_id']),
@@ -431,7 +437,10 @@ class SearchService:
                 semantic_score=0.0,  # Set from FAISS scores later
                 final_score=0.0,  # Computed from weighted scores
                 document_title=row.get('document_title'),
-                images=[]  # Populated by _attach_linked_images()
+                images=[],  # Populated by _attach_linked_images()
+                readability_score=float(row.get('readability_score', 0.0)),
+                coherence_score=float(row.get('coherence_score', 0.0)),
+                completeness_score=float(row.get('completeness_score', 0.0)),
             ))
 
         return results
@@ -592,21 +601,24 @@ class SearchService:
                 images_by_chunk[chunk_id] = []
 
             # ADAPTED: Create ExtractedImage with available fields
+            # Strip output/images/ prefix from storage_path for frontend compatibility
+            file_path_str = row['file_path'] or ''
+            if file_path_str.startswith('output/images/'):
+                file_path_str = file_path_str[len('output/images/'):]
+
             img_obj = ExtractedImage(
                 id=str(row['id']),
                 document_id=str(row['document_id']),
-                file_path=Path(row['file_path']),  # Aliased from storage_path
+                file_path=Path(file_path_str),  # Aliased from storage_path, prefix stripped
                 page_number=0,  # page_id is UUID, not page number
-                width=row.get('width', 0),
-                height=row.get('height', 0),
-                format=row.get('format', 'JPEG'),
+                width=row.get('width') or 0,
+                height=row.get('height') or 0,
+                format=row.get('format') or 'JPEG',
                 content_hash='',  # Not in schema
-                caption=row.get('caption', ''),
-                vlm_caption=row.get('vlm_caption', ''),
-                image_type=row.get('image_type', 'unknown'),
-                quality_score=row.get('quality_score', 0.0),
-                # Store link score in metadata
-                metadata={"link_score": float(row['link_score'])}
+                caption=row.get('caption') or '',
+                vlm_caption=row.get('vlm_caption') or '',
+                image_type=row.get('image_type') or 'unknown',
+                quality_score=row.get('quality_score') or 0.0
             )
 
             # Limit to max 3 images per chunk
