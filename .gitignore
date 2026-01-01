@@ -153,3 +153,29 @@ models/
 *.pth
 *.onnx
 *.bin
+
+# =============================================================================
+# Project-Specific Ignores
+# =============================================================================
+# Alternate Python version environments
+venv312/
+venv*/
+
+# Temp requirements/migration files
+requirements312.txt
+requirements_314_backup.txt
+migration_312/
+start312.sh
+
+# Pip error artifacts
+=0.20.3
+
+# Local config
+.neurosynth.json
+
+# Sample/test data
+rhoton_chunks.json
+*.chunks.json
+
+# Frontend (separate repo at /Users/ramihatoum/Desktop/frontend)
+frontend
