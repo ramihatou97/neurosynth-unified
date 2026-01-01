@@ -1,10 +1,24 @@
 #!/usr/bin/env python
-"""Test Stage 1-2: PDF Parsing and Text Extraction"""
+"""Test Stage 1-2: PDF Parsing and Text Extraction
+
+Usage:
+    python tests/manual/stage01_pdf_parsing.py <path-to-pdf>
+
+Or set the TEST_PDF_PATH environment variable.
+"""
 import sys
+import os
 from pathlib import Path
 
-# Test PDF file
-PDF_PATH = Path("/Users/ramihatoum/Downloads/Keyhole Approaches in Neurosurgery - Volume 1 (2008) - Perneczky copy.pdf")
+# Get PDF path from command line or environment
+if len(sys.argv) > 1:
+    PDF_PATH = Path(sys.argv[1])
+else:
+    PDF_PATH = Path(os.getenv("TEST_PDF_PATH", ""))
+    if not PDF_PATH.exists():
+        print("Usage: python tests/manual/stage01_pdf_parsing.py <path-to-pdf>")
+        print("   Or: TEST_PDF_PATH=/path/to/file.pdf python tests/manual/stage01_pdf_parsing.py")
+        sys.exit(1)
 
 def test_pdf_parsing():
     print("="*70)

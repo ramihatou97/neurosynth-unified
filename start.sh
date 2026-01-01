@@ -29,7 +29,7 @@ for arg in "$@"; do
 done
 
 # Step 1: Check/Install Homebrew
-echo "[1/11] Checking Homebrew..."
+echo "[1/12] Checking Homebrew..."
 if ! command -v brew &>/dev/null; then
     echo "   Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -38,7 +38,7 @@ fi
 echo "   Homebrew ✓"
 
 # Step 2: Check/Install PostgreSQL
-echo "[2/11] Checking PostgreSQL..."
+echo "[2/12] Checking PostgreSQL..."
 if ! brew list postgresql@16 &>/dev/null; then
     echo "   Installing PostgreSQL 16..."
     brew install postgresql@16
@@ -46,13 +46,13 @@ fi
 echo "   PostgreSQL ✓"
 
 # Step 3: Start PostgreSQL
-echo "[3/11] Starting PostgreSQL..."
+echo "[3/12] Starting PostgreSQL..."
 brew services start postgresql@16 2>/dev/null || true
 sleep 2
 echo "   PostgreSQL running ✓"
 
 # Step 4: Create database/user
-echo "[4/11] Setting up database..."
+echo "[4/12] Setting up database..."
 if [ "$CLEAN" = true ]; then
     echo "   Dropping existing database..."
     dropdb neurosynth 2>/dev/null || true
@@ -72,7 +72,7 @@ psql neurosynth -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null || true
 echo "   Database ready ✓"
 
 # Step 5: Check Python
-echo "[5/11] Checking Python..."
+echo "[5/12] Checking Python..."
 if ! command -v python3 &>/dev/null; then
     echo "❌ Python 3 not found. Install Python 3.10+"
     exit 1
@@ -82,28 +82,39 @@ echo "   Python $PYTHON_VERSION ✓"
 
 # Step 6: Create venv
 if [ ! -d "venv" ] || [ "$CLEAN" = true ]; then
-    echo "[6/11] Creating virtual environment..."
+    echo "[6/12] Creating virtual environment..."
     rm -rf venv
     python3 -m venv venv
     REINSTALL=true
 else
-    echo "[6/11] Virtual environment exists ✓"
+    echo "[6/12] Virtual environment exists ✓"
 fi
 source venv/bin/activate
 
 # Step 7: Install dependencies
 if [ "$REINSTALL" = true ]; then
-    echo "[7/11] Installing dependencies..."
+    echo "[7/12] Installing dependencies..."
     pip install --upgrade pip -q
     pip install -r requirements.txt -q
     echo "   Dependencies installed ✓"
 else
-    echo "[7/11] Dependencies installed ✓"
+    echo "[7/12] Dependencies installed ✓"
 fi
 
-# Step 8: Setup .env
+# Step 8: Install SciSpacy model (only if not already installed)
+# This is a large model (~800MB) so we check first to avoid re-downloading
+echo "[8/12] Checking SciSpacy medical NLP model..."
+if python -c "import spacy; spacy.load('en_core_sci_lg')" 2>/dev/null; then
+    echo "   en_core_sci_lg model ✓"
+else
+    echo "   Installing en_core_sci_lg (~800MB, one-time download)..."
+    pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_lg-0.5.4.tar.gz -q
+    echo "   SciSpacy model installed ✓"
+fi
+
+# Step 9: Setup .env
 if [ ! -f ".env" ]; then
-    echo "[8/11] Creating .env from template..."
+    echo "[9/12] Creating .env from template..."
     cp .env.example .env
     # Update DATABASE_URL for local PostgreSQL
     sed -i '' 's|postgresql+asyncpg://neurosynth:neurosynth@localhost:5432/neurosynth|postgresql+asyncpg://neurosynth:neurosynth@localhost/neurosynth|' .env
@@ -113,24 +124,24 @@ if [ ! -f ".env" ]; then
     echo ""
     read -p "Press Enter after editing .env (or Ctrl+C to exit)..."
 else
-    echo "[8/11] .env exists ✓"
+    echo "[9/12] .env exists ✓"
 fi
 
-# Step 9: Initialize database schema
-echo "[9/11] Initializing database schema..."
+# Step 10: Initialize database schema
+echo "[10/12] Initializing database schema..."
 python scripts/init_database.py 2>/dev/null && echo "   Schema initialized ✓" || echo "   Schema ready ✓"
 
-# Step 10: Build indexes
+# Step 11: Build indexes
 if [ "$REBUILD_INDEX" = true ] || [ "$CLEAN" = true ] || [ ! -f "indexes/text.faiss" ]; then
-    echo "[10/11] Building FAISS indexes..."
+    echo "[11/12] Building FAISS indexes..."
     rm -rf indexes/*.faiss indexes/*.json 2>/dev/null || true
     python scripts/build_indexes.py 2>/dev/null && echo "   Indexes built ✓" || echo "   Indexes skipped (no data yet)"
 else
-    echo "[10/11] FAISS indexes exist ✓"
+    echo "[11/12] FAISS indexes exist ✓"
 fi
 
-# Step 11: Start server
-echo "[11/11] Starting API server..."
+# Step 12: Start server
+echo "[12/12] Starting API server..."
 echo ""
 echo "================================================"
 echo "  🚀 NeuroSynth API: http://localhost:8000"
