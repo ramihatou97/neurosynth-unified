@@ -30,22 +30,28 @@ class DocumentRepository(BaseRepository):
     
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to document dict."""
+        # Note: Schema uses file_path, not source_path
         return {
             'id': row['id'],
-            'source_path': row['source_path'],
+            'source_path': row.get('file_path', ''),  # Map DB file_path to API source_path
             'title': row.get('title'),
             'total_pages': row.get('total_pages', 0),
             'total_chunks': row.get('total_chunks', 0),
             'total_images': row.get('total_images', 0),
-            'processing_time_seconds': row.get('processing_time_seconds'),
             'created_at': row.get('created_at'),
             'updated_at': row.get('updated_at'),
-            'metadata': row.get('metadata', {})
+            'specialty': row.get('specialty'),
+            'authority_score': row.get('authority_score')
         }
     
     def _to_record(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         """Convert document dict to database record."""
-        metadata = entity.get('metadata', {})
+        metadata = entity.get('metadata', {}) or {}
+        
+        # Ensure processing_time_seconds is in metadata
+        if 'processing_time_seconds' in entity:
+            metadata['processing_time_seconds'] = entity['processing_time_seconds']
+            
         if isinstance(metadata, dict):
             metadata = json.dumps(metadata)
         
@@ -54,7 +60,8 @@ class DocumentRepository(BaseRepository):
             'source_path': entity['source_path'],
             'title': entity.get('title'),
             'total_pages': entity.get('total_pages', 0),
-            'processing_time_seconds': entity.get('processing_time_seconds'),
+            # AVG: Removed processing_time_seconds as it's not in schema
+            # 'processing_time_seconds': entity.get('processing_time_seconds'),
             'metadata': metadata
         }
     
@@ -84,21 +91,25 @@ class DocumentRepository(BaseRepository):
     
     async def get_by_source_path(self, source_path: str) -> Optional[Dict[str, Any]]:
         """Find document by source file path."""
+        # DB column is file_path, not source_path
         return await self.find_one_by({'file_path': source_path})
     
     async def get_with_stats(self, id: UUID) -> Optional[Dict[str, Any]]:
         """Get document with chunk and image statistics."""
+        # Schema uses file_path, not source_path; embedding→clip_embedding, vlm_caption→caption
         query = """
             SELECT
                 d.id,
-                d.file_path as source_path,
+                d.file_path,
                 d.title,
                 d.created_at,
                 d.updated_at,
+                d.specialty,
+                d.authority_score,
                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as total_chunks,
                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id AND embedding IS NOT NULL) as chunks_with_embedding,
                 (SELECT COUNT(*) FROM images WHERE document_id = d.id) as total_images,
-                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND image_embedding IS NOT NULL) as images_with_embedding,
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND clip_embedding IS NOT NULL) as images_with_embedding,
                 (SELECT COUNT(*) FROM images WHERE document_id = d.id AND caption IS NOT NULL) as images_with_caption
             FROM documents d
             WHERE d.id = $1
@@ -109,6 +120,14 @@ class DocumentRepository(BaseRepository):
             return None
 
         doc = self._to_entity(dict(row))
+        
+        # Parse metadata if it's a string (asyncpg usu handles jsonb as dict, but just in case)
+        if isinstance(doc.get('metadata'), str):
+            try:
+                doc['metadata'] = json.loads(doc['metadata'])
+            except:
+                pass
+
         doc['stats'] = {
             'chunks': {
                 'total': row.get('total_chunks', 0),
@@ -130,30 +149,34 @@ class DocumentRepository(BaseRepository):
         offset: int = 0
     ) -> List[Dict[str, Any]]:
         """List documents with chunk and image counts."""
+        # Schema: file_path (not source_path), count pages from pages table
         query = """
             SELECT
                 d.id,
-                d.file_path as source_path,
+                d.file_path,
                 d.title,
-                0 as total_pages,
+                d.specialty,
+                d.authority_score,
+                (SELECT COUNT(*) FROM pages WHERE document_id = d.id) as total_pages,
                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as total_chunks,
                 (SELECT COUNT(*) FROM images WHERE document_id = d.id) as total_images,
                 d.created_at,
                 d.updated_at
             FROM documents d
+            WHERE d.deleted_at IS NULL
             ORDER BY d.created_at DESC
             LIMIT $1 OFFSET $2
         """
-        
+
         rows = await self.db.fetch(query, limit, offset)
         return [self._to_entity(dict(row)) for row in rows]
     
     async def update_stats(self, id: UUID) -> None:
         """Manually update document statistics."""
+        # AVG: schema doesn't have cached stats columns, skipping update.
+        # Stats are calculated via views or subqueries now.
         query = """
             UPDATE documents SET
-                total_chunks = (SELECT COUNT(*) FROM chunks WHERE document_id = $1),
-                total_images = (SELECT COUNT(*) FROM images WHERE document_id = $1),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
         """
@@ -163,3 +186,9 @@ class DocumentRepository(BaseRepository):
         """Delete document and all related chunks, images, links."""
         # Due to CASCADE constraints, this should work automatically
         return await self.delete(id)
+
+    async def list_all_ids(self) -> List[UUID]:
+        """Get all document IDs."""
+        query = "SELECT id FROM documents ORDER BY created_at DESC"
+        rows = await self.db.fetch(query)
+        return [row['id'] for row in rows]

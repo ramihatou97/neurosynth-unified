@@ -184,6 +184,15 @@ class DatabaseConnection:
 # Convenience Functions
 # =============================================================================
 
+def get_connection_string() -> str:
+    """Get PostgreSQL connection string from environment."""
+    import os
+    return os.getenv(
+        "DATABASE_URL",
+        "postgresql://postgres:postgres@localhost:5432/neurosynth"
+    )
+
+
 async def get_database() -> DatabaseConnection:
     """Get database connection (for FastAPI dependency injection)."""
     return DatabaseConnection.get_instance()

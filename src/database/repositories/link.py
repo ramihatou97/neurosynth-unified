@@ -108,19 +108,23 @@ class LinkRepository(BaseRepository):
                 continue
             
             # Prepare metadata
-            metadata = link.get('metadata', {})
+            # Add scores to metadata
+            if link.get('proximity_score') is not None:
+                metadata['proximity_score'] = link.get('proximity_score')
+            if link.get('semantic_score') is not None:
+                metadata['semantic_score'] = link.get('semantic_score')
+            if link.get('cui_overlap_score') is not None:
+                metadata['cui_overlap_score'] = link.get('cui_overlap_score')
+
             if isinstance(metadata, dict):
                 metadata = json.dumps(metadata)
-            
+
             records.append((
                 uuid4(),  # New ID
                 chunk_id,
                 image_id,
                 link.get('link_type') or link.get('match_type', 'unknown'),
                 link.get('score') or link.get('strength', 0.0),
-                link.get('proximity_score'),
-                link.get('semantic_score'),
-                link.get('cui_overlap_score'),
                 metadata
             ))
         
@@ -130,9 +134,8 @@ class LinkRepository(BaseRepository):
         async with self.db.transaction() as conn:
             await conn.executemany("""
                 INSERT INTO links (
-                    id, chunk_id, image_id, link_type, score,
-                    proximity_score, semantic_score, cui_overlap_score, metadata
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                    id, chunk_id, image_id, link_type, score, metadata
+                ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
                 ON CONFLICT (chunk_id, image_id) DO UPDATE SET
                     score = EXCLUDED.score,
                     link_type = EXCLUDED.link_type

@@ -7,6 +7,7 @@ Supports dual embeddings: visual (BiomedCLIP 512d) and caption (Voyage 1024d).
 """
 
 import logging
+import os
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 import json
@@ -37,29 +38,35 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to image dict."""
+        # DB columns: storage_path, caption, clip_embedding, original_filename
+        # API expects: file_path, vlm_caption, embedding, file_name
+        # DB stores: output/images/{job_id}/{filename}
+        # API serves from: ./output/images/ so we need just {job_id}/{filename}
+        storage_path = row.get('storage_path') or row.get('file_path', '')
+        # Strip 'output/images/' prefix if present
+        if storage_path.startswith('output/images/'):
+            storage_path = storage_path[len('output/images/'):]
         return {
             'id': row['id'],
             'document_id': row['document_id'],
-            'file_path': row['file_path'],
-            'file_name': row.get('file_name'),
-            'content_hash': row.get('content_hash'),
+            'file_path': storage_path,
+            'file_name': row.get('original_filename') or row.get('file_name'),
+            'thumbnail_path': row.get('thumbnail_path'),
             'width': row.get('width'),
             'height': row.get('height'),
             'format': row.get('format'),
-            'page_number': row.get('page_number'),
-            'image_index': row.get('image_index'),
+            'page_id': row.get('page_id'),
             'image_type': row.get('image_type'),
+            'image_subtype': row.get('image_subtype'),
             'is_decorative': row.get('is_decorative', False),
-            'vlm_caption': row.get('vlm_caption'),
-            'vlm_confidence': row.get('vlm_confidence'),
-            'embedding': row.get('embedding'),  # 512d visual
-            'caption_embedding': row.get('caption_embedding'),  # 1024d caption
-            'cuis': row.get('cuis', []),
-            'entities': row.get('entities', []),
-            'triage_skipped': row.get('triage_skipped', False),
-            'triage_reason': row.get('triage_reason'),
+            'vlm_caption': row.get('caption') or row.get('vlm_caption'),
+            'caption_summary': row.get('caption_summary'),  # Pre-computed brief summary
+            'alt_text': row.get('alt_text'),
+            'surrounding_text': row.get('surrounding_text'),
+            'figure_number': row.get('figure_number'),
+            'embedding': row.get('clip_embedding') or row.get('embedding'),  # 512d visual
+            'quality_score': row.get('quality_score'),
             'created_at': row.get('created_at'),
-            'metadata': row.get('metadata', {}),
             # Search result fields
             'similarity': row.get('similarity')
         }
@@ -67,50 +74,32 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     def _to_record(self, entity: Dict[str, Any]) -> Dict[str, Any]:
         """Convert image dict to database record."""
         from src.database.connection import DatabaseConnection
-        
-        # Handle embeddings
-        embedding = entity.get('embedding')
-        caption_embedding = entity.get('caption_embedding')
-        
+
+        # Handle embedding - DB column is clip_embedding
+        embedding = entity.get('embedding') or entity.get('clip_embedding')
         if embedding is not None:
             if isinstance(embedding, (np.ndarray, list)):
                 embedding = DatabaseConnection._encode_vector(embedding)
-        
-        if caption_embedding is not None:
-            if isinstance(caption_embedding, (np.ndarray, list)):
-                caption_embedding = DatabaseConnection._encode_vector(caption_embedding)
-        
-        # Handle JSON fields
-        entities = entity.get('entities', [])
-        if isinstance(entities, list):
-            entities = json.dumps(entities)
-        
-        metadata = entity.get('metadata', {})
-        if isinstance(metadata, dict):
-            metadata = json.dumps(metadata)
-        
+
         return {
             'id': entity.get('id'),
             'document_id': entity['document_id'],
-            'file_path': entity['file_path'],
-            'file_name': entity.get('file_name'),
-            'content_hash': entity.get('content_hash'),
+            'storage_path': entity.get('file_path') or entity.get('storage_path', ''),
+            'original_filename': entity.get('file_name') or entity.get('original_filename'),
+            'thumbnail_path': entity.get('thumbnail_path'),
             'width': entity.get('width'),
             'height': entity.get('height'),
             'format': entity.get('format'),
-            'page_number': entity.get('page_number'),
-            'image_index': entity.get('image_index'),
+            'page_id': entity.get('page_id'),
             'image_type': entity.get('image_type'),
+            'image_subtype': entity.get('image_subtype'),
             'is_decorative': entity.get('is_decorative', False),
-            'vlm_caption': entity.get('vlm_caption'),
-            'vlm_confidence': entity.get('vlm_confidence'),
-            'embedding': embedding,
-            'caption_embedding': caption_embedding,
-            'cuis': entity.get('cuis', []),
-            'entities': entities,
-            'triage_skipped': entity.get('triage_skipped', False),
-            'triage_reason': entity.get('triage_reason'),
-            'metadata': metadata
+            'caption': entity.get('vlm_caption') or entity.get('caption'),
+            'alt_text': entity.get('alt_text'),
+            'surrounding_text': entity.get('surrounding_text'),
+            'figure_number': entity.get('figure_number'),
+            'quality_score': entity.get('quality_score'),
+            'clip_embedding': embedding
         }
     
     # =========================================================================
@@ -168,39 +157,25 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
             records.append((
                 img['id'],
                 document_id,
-                img.get('file_path', ''),
-                img.get('file_name'),
-                img.get('content_hash'),
-                img.get('width'),
-                img.get('height'),
-                img.get('format'),
-                img.get('page_number'),
-                img.get('image_index') or img.get('index'),
+                img.get('file_path') or img.get('storage_path', ''),
+                img.get('original_filename') or img.get('file_name'),
                 img.get('image_type'),
+                img.get('image_subtype'),
                 img.get('is_decorative', False),
-                img.get('vlm_caption'),
-                img.get('vlm_confidence'),
+                img.get('vlm_caption') or img.get('caption'),
+                img.get('alt_text'),
                 embedding,
-                caption_embedding,
-                list(img.get('cuis', []) or []),
-                entities,
-                img.get('triage_skipped', False),
-                img.get('triage_reason'),
-                metadata
+                img.get('caption_summary')  # Pre-computed brief summary
             ))
-        
+
         async with self.db.transaction() as conn:
             await conn.executemany("""
                 INSERT INTO images (
-                    id, document_id, file_path, file_name, content_hash,
-                    width, height, format, page_number, image_index,
-                    image_type, is_decorative, vlm_caption, vlm_confidence,
-                    embedding, caption_embedding, cuis, entities,
-                    triage_skipped, triage_reason, metadata
+                    id, document_id, storage_path, original_filename,
+                    image_type, image_subtype, is_decorative, caption,
+                    alt_text, clip_embedding, caption_summary
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                    $11, $12, $13, $14, $15::vector, $16::vector, $17, $18::jsonb,
-                    $19, $20, $21::jsonb
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11
                 )
             """, records)
         
@@ -216,16 +191,18 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
         document_id: UUID,
         page_number: int = None,
         include_decorative: bool = False,
-        include_embedding: bool = False
+        include_embedding: bool = False,
+        limit: int = None,
+        offset: int = None
     ) -> List[Dict[str, Any]]:
-        """Get images for a document."""
+        """Get images for a document with optional pagination."""
         columns = """
             i.id, i.document_id, i.storage_path as file_path, i.original_filename as file_name,
-            i.image_type, i.is_decorative, i.caption as vlm_caption
+            i.image_type, i.is_decorative, i.caption as vlm_caption, i.caption_summary
         """
         if include_embedding:
             columns += ", i.clip_embedding as embedding"
-        
+
         conditions = ["i.document_id = $1"]
         params = [document_id]
         param_idx = 2
@@ -243,9 +220,42 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
             WHERE {' AND '.join(conditions)}
             ORDER BY i.created_at
         """
-        
+
+        # Add pagination if specified (database-level for efficiency)
+        if limit is not None:
+            params.append(limit)
+            query += f" LIMIT ${len(params)}"
+        if offset is not None:
+            params.append(offset)
+            query += f" OFFSET ${len(params)}"
+
         rows = await self.db.fetch(query, *params)
         return [self._to_entity(dict(row)) for row in rows]
+
+    async def count_by_document(
+        self,
+        document_id: UUID,
+        page_number: int = None,
+        include_decorative: bool = False
+    ) -> int:
+        """Count images for a document (for pagination)."""
+        conditions = ["document_id = $1"]
+        params = [document_id]
+
+        if page_number is not None:
+            # Note: page_number filter not available in current schema
+            pass
+
+        if not include_decorative:
+            conditions.append("NOT is_decorative")
+
+        query = f"""
+            SELECT COUNT(*) FROM images
+            WHERE {' AND '.join(conditions)}
+        """
+
+        count = await self.db.fetchval(query, *params)
+        return count or 0
     
     async def get_by_type(
         self,
@@ -317,7 +327,7 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     ) -> List[Dict[str, Any]]:
         """
         Search images by visual (BiomedCLIP) embedding.
-        
+
         Args:
             query_embedding: 512d visual query vector
             top_k: Number of results
@@ -326,32 +336,33 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
         """
         from src.database.connection import DatabaseConnection
         embedding_str = DatabaseConnection._encode_vector(query_embedding)
-        
-        conditions = ["embedding IS NOT NULL", "NOT is_decorative"]
+
+        # DB column is clip_embedding, not embedding
+        conditions = ["clip_embedding IS NOT NULL", "NOT is_decorative"]
         params = [embedding_str, top_k]
-        
+
         if document_ids:
             conditions.append("document_id = ANY($3)")
             params.append(document_ids)
-        
+
         where_clause = " AND ".join(conditions)
-        
+
         query = f"""
             SELECT *,
-                   1 - (embedding <=> $1::vector) AS similarity
+                   1 - (clip_embedding <=> $1::vector) AS similarity
             FROM images
             WHERE {where_clause}
-            ORDER BY embedding <=> $1::vector
+            ORDER BY clip_embedding <=> $1::vector
             LIMIT $2
         """
-        
+
         rows = await self.db.fetch(query, *params)
-        
+
         results = []
         for row in rows:
             if row['similarity'] >= min_similarity:
                 results.append(self._to_entity(dict(row)))
-        
+
         return results
     
     async def search_by_caption_embedding(
@@ -363,10 +374,10 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     ) -> List[Dict[str, Any]]:
         """
         Search images by caption (text) embedding.
-        
+
         This allows finding images based on text queries by searching
-        the 1024d caption embeddings.
-        
+        the image_embedding column (Voyage text embedding of caption).
+
         Args:
             query_embedding: 1024d text query vector
             top_k: Number of results
@@ -375,32 +386,33 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
         """
         from src.database.connection import DatabaseConnection
         embedding_str = DatabaseConnection._encode_vector(query_embedding)
-        
-        conditions = ["caption_embedding IS NOT NULL", "NOT is_decorative"]
+
+        # DB column is image_embedding (Voyage embedding of caption text)
+        conditions = ["image_embedding IS NOT NULL", "NOT is_decorative"]
         params = [embedding_str, top_k]
-        
+
         if document_ids:
             conditions.append("document_id = ANY($3)")
             params.append(document_ids)
-        
+
         where_clause = " AND ".join(conditions)
-        
+
         query = f"""
             SELECT *,
-                   1 - (caption_embedding <=> $1::vector) AS similarity
+                   1 - (image_embedding <=> $1::vector) AS similarity
             FROM images
             WHERE {where_clause}
-            ORDER BY caption_embedding <=> $1::vector
+            ORDER BY image_embedding <=> $1::vector
             LIMIT $2
         """
-        
+
         rows = await self.db.fetch(query, *params)
-        
+
         results = []
         for row in rows:
             if row['similarity'] >= min_similarity:
                 results.append(self._to_entity(dict(row)))
-        
+
         return results
     
     async def search_by_text(
@@ -511,4 +523,27 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
         result = await self.db.execute(query, document_id)
         count = int(result.split()[-1]) if result else 0
         logger.info(f"Deleted {count} images for document {document_id}")
+        return count
+
+    async def delete_many(self, ids: List[UUID]) -> int:
+        """Delete multiple images by ID."""
+        if not ids:
+            return 0
+        query = "DELETE FROM images WHERE id = ANY($1::uuid[])"
+        result = await self.db.execute(query, [str(id) for id in ids])
+        count = int(result.split()[-1]) if result else 0
+        logger.info(f"Deleted {count} images")
+        return count
+
+    async def list_all_ids(self) -> List[UUID]:
+        """Get all image IDs."""
+        query = "SELECT id FROM images ORDER BY created_at DESC"
+        rows = await self.db.fetch(query)
+        return [row['id'] for row in rows]
+
+    async def delete_all(self) -> int:
+        """Delete all images."""
+        result = await self.db.execute("DELETE FROM images")
+        count = int(result.split()[-1]) if result else 0
+        logger.info(f"Deleted all images: {count} total")
         return count

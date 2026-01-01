@@ -103,7 +103,12 @@ class NeuroDatabase:
         self._pool = pool
         self._config = config or DatabaseConfig()
         self._embedding_dim: Optional[int] = None
-    
+
+    @property
+    def pool(self) -> "asyncpg.Pool":
+        """Get the connection pool."""
+        return self._pool
+
     @classmethod
     async def connect(
         cls,
@@ -422,16 +427,17 @@ class NeuroDatabase:
                     page_start, page_end, section_path,
                     entity_names, entities_json, specialty_tags,
                     figure_refs, table_refs, image_ids, keywords,
-                    text_embedding, fused_embedding
+                    text_embedding, fused_embedding, summary
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
                 )
             """,
                 UUID(chunk.id), UUID(chunk.document_id), chunk.content, chunk.title,
                 chunk.chunk_type.value, chunk.page_start, chunk.page_end,
                 chunk.section_path, chunk.entity_names, json.dumps(entities_json),
                 chunk.specialty_tags, chunk.figure_refs, chunk.table_refs,
-                chunk.image_ids, chunk.keywords, text_emb, fused_emb
+                chunk.image_ids, chunk.keywords, text_emb, fused_emb,
+                chunk.summary
             )
     
     async def insert_chunks_batch(
@@ -527,22 +533,24 @@ class NeuroDatabase:
                 width, height, format, content_hash,
                 image_type, is_decorative, quality_score,
                 caption, caption_confidence, figure_id, surrounding_text,
-                sequence_id, sequence_position, chunk_ids, embedding
+                sequence_id, sequence_position, chunk_ids, embedding,
+                vlm_caption, caption_summary
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
             )
         """)
-        
+
         for img in images:
             embedding = img.embedding.tolist() if img.embedding is not None else None
-            
+
             await stmt.fetchval(
                 UUID(img.id), UUID(img.document_id), img.page_number, str(img.file_path),
                 img.width, img.height, img.format, img.content_hash,
                 img.image_type.value, img.is_decorative, img.quality_score,
                 img.caption, img.caption_confidence, img.figure_id,
                 img.surrounding_text[:1000] if img.surrounding_text else None,
-                img.sequence_id, img.sequence_position, img.chunk_ids, embedding
+                img.sequence_id, img.sequence_position, img.chunk_ids, embedding,
+                getattr(img, 'vlm_caption', None), getattr(img, 'caption_summary', None)
             )
     
     async def get_document_images(self, doc_id: str) -> List[ExtractedImage]:
