@@ -75,30 +75,32 @@ async def fetch_chunk_embeddings(db) -> tuple:
 async def fetch_image_embeddings(db) -> tuple:
     """Fetch image embeddings from database."""
     logger.info("Fetching image embeddings...")
-    
+
     rows = await db.fetch("""
-        SELECT id, embedding, caption_embedding
+        SELECT id, image_embedding, caption_embedding
         FROM images
-        WHERE NOT is_decorative
+        WHERE (is_decorative IS NULL OR NOT is_decorative)
         ORDER BY id
     """)
-    
+
     visual_embeddings = []
     visual_ids = []
     caption_embeddings = []
     caption_ids = []
-    
+
     for row in rows:
         img_id = str(row['id'])
-        
-        if row['embedding'] is not None:
-            visual_embeddings.append(np.array(row['embedding'], dtype=np.float32))
+
+        # Visual embeddings: image_embedding (512d BiomedCLIP)
+        if row['image_embedding'] is not None:
+            visual_embeddings.append(np.array(row['image_embedding'], dtype=np.float32))
             visual_ids.append(img_id)
-        
+
+        # Caption embeddings: caption_embedding (1024d Voyage)
         if row['caption_embedding'] is not None:
             caption_embeddings.append(np.array(row['caption_embedding'], dtype=np.float32))
             caption_ids.append(img_id)
-    
+
     logger.info(f"Fetched {len(visual_embeddings)} visual embeddings, {len(caption_embeddings)} caption embeddings")
     return visual_embeddings, visual_ids, caption_embeddings, caption_ids
 
