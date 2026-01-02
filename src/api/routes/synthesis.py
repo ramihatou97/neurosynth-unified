@@ -23,6 +23,9 @@ from typing import Optional, List, Literal
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from typing import Dict, Any
+
+from src.api.models import ValidationResult  # Enhanced pipeline model
 
 from src.synthesis.engine import (
     SynthesisEngine,
@@ -100,6 +103,11 @@ class SynthesisResponse(BaseModel):
     verified: bool = False
     conflict_count: int = 0
     conflict_report: Optional[dict] = None
+    # Enhanced pipeline fields
+    all_cuis: List[str] = Field(default_factory=list, description="All CUIs found across all source chunks")
+    chunk_type_distribution: Dict[str, int] = Field(default_factory=dict, description="Count of chunks by type (PROCEDURE, ANATOMY, etc.)")
+    validation_result: Optional[ValidationResult] = Field(None, description="Hallucination check results")
+    quality_summary: Dict[str, float] = Field(default_factory=dict, description="Aggregate quality stats of used sources")
 
 
 class TemplateInfo(BaseModel):
@@ -324,8 +332,66 @@ async def generate_synthesis(request: SynthesisRequest):
             f"Synthesis complete: {result.total_words} words, "
             f"{result.total_figures} figures, {result.synthesis_time_ms}ms"
         )
-        
+
+        # Register synthesis context for chat (non-blocking)
+        try:
+            from src.chat.routes import get_stores
+            from src.chat.engine import SynthesisContext
+            from uuid import uuid4
+
+            _, synthesis_store = await get_stores()
+            if synthesis_store:
+                # Extract chunk IDs from references
+                chunk_ids = []
+                document_ids = set()
+                for ref in result.references:
+                    if isinstance(ref, dict):
+                        if ref.get('chunk_id'):
+                            chunk_ids.append(ref['chunk_id'])
+                        if ref.get('document_id'):
+                            document_ids.add(ref['document_id'])
+
+                # Also extract from search results used
+                for sr in search_response.results[:request.max_chunks]:
+                    if hasattr(sr, 'chunk_id') and sr.chunk_id:
+                        chunk_ids.append(sr.chunk_id)
+                    if hasattr(sr, 'document_id') and sr.document_id:
+                        document_ids.add(sr.document_id)
+
+                context = SynthesisContext(
+                    synthesis_id=str(uuid4()),
+                    topic=request.topic,
+                    template_type=request.template_type,
+                    chunk_ids=list(set(chunk_ids)),  # Deduplicate
+                    document_ids=list(document_ids),
+                    section_summaries={
+                        s.title: s.content[:200] + "..." if len(s.content) > 200 else s.content
+                        for s in result.sections
+                    },
+                    created_at=datetime.utcnow()
+                )
+                await synthesis_store.save(context)
+                logger.info(f"Registered synthesis context {context.synthesis_id} for chat")
+        except Exception as e:
+            logger.warning(f"Failed to register synthesis context for chat: {e}")
+
         # Convert to response model
+        # Extract enhanced fields from result context
+        context = getattr(result, 'context', {}) or {}
+
+        # Build validation result if available
+        validation_result_data = None
+        if hasattr(result, 'validation_report') and result.validation_report:
+            vr = result.validation_report
+            validation_result_data = ValidationResult(
+                validated=getattr(vr, 'validated', True),
+                hallucination_risk=getattr(vr, 'hallucination_risk', False),
+                generated_cuis=getattr(vr, 'generated_cuis', 0),
+                source_cuis=getattr(vr, 'source_cuis', 0),
+                unsupported_cuis=getattr(vr, 'unsupported_cuis', []),
+                issues=getattr(vr, 'issues', []),
+            )
+
         return SynthesisResponse(
             title=result.title,
             abstract=result.abstract,
@@ -360,6 +426,11 @@ async def generate_synthesis(request: SynthesisRequest):
             verified=result.verified,
             conflict_count=result.conflict_count,
             conflict_report=result.conflict_report.to_dict() if result.conflict_report else None,
+            # Enhanced pipeline fields
+            all_cuis=context.get('all_cuis', []),
+            chunk_type_distribution=context.get('chunk_type_distribution', {}),
+            validation_result=validation_result_data,
+            quality_summary=context.get('quality_summary', {}),
         )
     
     except asyncio.TimeoutError:

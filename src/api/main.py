@@ -43,6 +43,7 @@ from src.api.routes import (
 )
 from src.api.routes.images import router as images_router
 from src.api.routes.knowledge_graph import router as knowledge_graph_router
+from src.chat.routes import router as chat_router
 
 # Configure logging
 logging.basicConfig(
@@ -76,7 +77,15 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize services: {e}")
         # Fail fast - don't allow degraded startup that will cause 500 errors
         raise RuntimeError(f"Cannot start API without database: {e}") from e
-    
+
+    # Initialize chat stores (non-blocking - falls back to in-memory)
+    try:
+        from src.chat.routes import get_stores
+        await get_stores()
+        logger.info("✓ Chat stores initialized")
+    except Exception as e:
+        logger.warning(f"Chat store initialization failed (using in-memory fallback): {e}")
+
     yield
     
     # Shutdown
@@ -145,6 +154,7 @@ Currently open access. Production deployments should add authentication.
     app.include_router(synthesis_router)
     app.include_router(images_router)  # Image serving with security
     app.include_router(knowledge_graph_router)  # Knowledge graph endpoints
+    app.include_router(chat_router, prefix="/api/v1")  # Enhanced chat with synthesis linking
     
     # Exception handlers
     @app.exception_handler(RequestValidationError)
