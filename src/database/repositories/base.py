@@ -7,7 +7,7 @@ Abstract base class for repository pattern with common CRUD operations.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import TypeVar, Generic, List, Optional, Dict, Any, Type
+from typing import TypeVar, Generic, List, Optional, Dict, Any, Type, Set
 from uuid import UUID
 from datetime import datetime
 
@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 # Generic type for entity classes
 T = TypeVar('T')
+
+# Whitelist of allowed ORDER BY columns for SQL injection prevention
+ALLOWED_ORDER_COLUMNS: Set[str] = {
+    'created_at', 'updated_at', 'id', 'name', 'title',
+    'score', 'chunk_count', 'page_number', 'sequence_in_doc',
+    'ingested_at', 'occurrence_count', 'file_name'
+}
 
 
 class BaseRepository(ABC, Generic[T]):
@@ -54,7 +61,31 @@ class BaseRepository(ABC, Generic[T]):
     def _to_record(self, entity: T) -> Dict[str, Any]:
         """Convert entity object to database record."""
         pass
-    
+
+    def _validate_order_by(self, order_by: str) -> str:
+        """Validate and sanitize ORDER BY clause to prevent SQL injection."""
+        if not order_by:
+            return "created_at DESC"
+
+        parts = order_by.strip().split()
+        if len(parts) == 1:
+            column, direction = parts[0], "ASC"
+        elif len(parts) == 2:
+            column, direction = parts
+        else:
+            logger.warning(f"Invalid order_by format: '{order_by}'. Using fallback.")
+            return "created_at DESC"
+
+        if column.lower() not in ALLOWED_ORDER_COLUMNS:
+            logger.warning(f"Invalid sort column: '{column}'. Using fallback.")
+            return "created_at DESC"
+
+        if direction.upper() not in ('ASC', 'DESC'):
+            logger.warning(f"Invalid sort direction: '{direction}'. Defaulting to ASC.")
+            return f"{column} ASC"
+
+        return f"{column} {direction.upper()}"
+
     # =========================================================================
     # Read Operations
     # =========================================================================
@@ -72,9 +103,10 @@ class BaseRepository(ABC, Generic[T]):
         order_by: str = "created_at DESC"
     ) -> List[T]:
         """Get all entities with pagination."""
+        safe_order_by = self._validate_order_by(order_by)
         query = f"""
             SELECT * FROM {self.table_name}
-            ORDER BY {order_by}
+            ORDER BY {safe_order_by}
             LIMIT $1 OFFSET $2
         """
         rows = await self.db.fetch(query, limit, offset)
@@ -205,7 +237,8 @@ class BaseRepository(ABC, Generic[T]):
         """Find entities matching conditions."""
         if not conditions:
             return await self.get_all(limit=limit, order_by=order_by)
-        
+
+        safe_order_by = self._validate_order_by(order_by)
         where_parts = []
         values = []
         for i, (key, value) in enumerate(conditions.items(), start=1):
@@ -214,16 +247,16 @@ class BaseRepository(ABC, Generic[T]):
             else:
                 where_parts.append(f"{key} = ${i}")
             values.append(value)
-        
+
         values.extend([limit])
-        
+
         query = f"""
             SELECT * FROM {self.table_name}
             WHERE {' AND '.join(where_parts)}
-            ORDER BY {order_by}
+            ORDER BY {safe_order_by}
             LIMIT ${len(values)}
         """
-        
+
         rows = await self.db.fetch(query, *values)
         return [self._to_entity(dict(row)) for row in rows]
     

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import time
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.api.models import (
@@ -206,7 +207,11 @@ async def readiness(
     """Kubernetes readiness probe."""
     if container.is_healthy:
         return {"status": "ready"}
-    return {"status": "not_ready"}, 503
+
+    return JSONResponse(
+        status_code=503,
+        content={"status": "not_ready"}
+    )
 
 
 # =============================================================================

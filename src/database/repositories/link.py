@@ -107,7 +107,13 @@ class LinkRepository(BaseRepository):
             if chunk_id is None or image_id is None:
                 continue
             
-            # Prepare metadata
+            # Initialize metadata dictionary explicitly
+            metadata = link.get('metadata', {}) or {}
+
+            # Ensure it's a dict if it came in as string/None
+            if not isinstance(metadata, dict):
+                metadata = {}
+
             # Add scores to metadata
             if link.get('proximity_score') is not None:
                 metadata['proximity_score'] = link.get('proximity_score')
@@ -116,8 +122,8 @@ class LinkRepository(BaseRepository):
             if link.get('cui_overlap_score') is not None:
                 metadata['cui_overlap_score'] = link.get('cui_overlap_score')
 
-            if isinstance(metadata, dict):
-                metadata = json.dumps(metadata)
+            # Serialize for database
+            metadata_json = json.dumps(metadata)
 
             records.append((
                 uuid4(),  # New ID
@@ -125,7 +131,7 @@ class LinkRepository(BaseRepository):
                 image_id,
                 link.get('link_type') or link.get('match_type', 'unknown'),
                 link.get('score') or link.get('strength', 0.0),
-                metadata
+                metadata_json
             ))
         
         if not records:

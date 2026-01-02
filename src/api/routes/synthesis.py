@@ -98,6 +98,8 @@ class SynthesisResponse(BaseModel):
     verification_score: Optional[float] = None
     verification_issues: List[str] = []
     verified: bool = False
+    conflict_count: int = 0
+    conflict_report: Optional[dict] = None
 
 
 class TemplateInfo(BaseModel):
@@ -140,31 +142,35 @@ _synthesis_engine: Optional[SynthesisEngine] = None
 async def get_synthesis_engine(container) -> SynthesisEngine:
     """Get or create SynthesisEngine singleton."""
     global _synthesis_engine
-    
+
     if _synthesis_engine is not None:
         return _synthesis_engine
-    
-    # Get Anthropic API key from settings
-    anthropic_key = getattr(container.settings, 'anthropic_api_key', None)
+
+    import os
+
+    # Get Anthropic API key from settings or environment
+    anthropic_key = None
+    if hasattr(container, 'settings') and container.settings:
+        anthropic_key = getattr(container.settings, 'anthropic_api_key', None)
     if not anthropic_key:
-        import os
         anthropic_key = os.getenv('ANTHROPIC_API_KEY')
-    
+
     if not anthropic_key:
         raise HTTPException(
             status_code=500,
             detail="ANTHROPIC_API_KEY not configured"
         )
-    
+
     # Initialize Anthropic client
     from anthropic import AsyncAnthropic
     anthropic_client = AsyncAnthropic(api_key=anthropic_key)
-    
+
     # Optional: Gemini for verification
     verification_client = None
-    google_key = getattr(container.settings, 'google_api_key', None)
+    google_key = None
+    if hasattr(container, 'settings') and container.settings:
+        google_key = getattr(container.settings, 'google_api_key', None)
     if not google_key:
-        import os
         google_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
     
     if google_key:
@@ -352,6 +358,8 @@ async def generate_synthesis(request: SynthesisRequest):
             verification_score=result.verification_score,
             verification_issues=result.verification_issues,
             verified=result.verified,
+            conflict_count=result.conflict_count,
+            conflict_report=result.conflict_report.to_dict() if result.conflict_report else None,
         )
     
     except asyncio.TimeoutError:
@@ -516,7 +524,9 @@ async def generate_synthesis_stream(request: SynthesisRequest):
                     "total_words": result.total_words,
                     "total_figures": result.total_figures,
                     "total_citations": result.total_citations,
-                    "synthesis_time_ms": result.synthesis_time_ms
+                    "synthesis_time_ms": result.synthesis_time_ms,
+                    "conflict_count": result.conflict_count,
+                    "conflict_report": result.conflict_report.to_dict() if result.conflict_report else None
                 }
             })
 

@@ -21,6 +21,8 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 if TYPE_CHECKING:
     from src.shared.models import SearchResult, ExtractedImage
 
+from src.synthesis.conflicts import ConflictHandler, ConflictReport
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,25 +65,210 @@ class TemplateType(str, Enum):
 
 
 class AuthoritySource(str, Enum):
-    """Source authority levels."""
+    """Source authority levels for neurosurgical literature."""
+    # Tier 1: Definitive Masters (1.0)
+    LAWTON = "LAWTON"
+    SAMII = "SAMII"
+    AL_MEFTY = "AL_MEFTY"
+    SPETZLER = "SPETZLER"
     RHOTON = "RHOTON"
+    # Tier 2: Major Textbooks (0.9)
     YOUMANS = "YOUMANS"
     SCHMIDEK = "SCHMIDEK"
+    CONNOLLY = "CONNOLLY"
+    # Tier 3: Standard References (0.8-0.85)
     GREENBERG = "GREENBERG"
+    BENZEL = "BENZEL"
+    AO_SPINE = "AO_SPINE"
+    # Tier 4: General (0.7-0.75)
     JOURNAL = "JOURNAL"
     TEXTBOOK = "TEXTBOOK"
     GENERAL = "GENERAL"
 
 
-AUTHORITY_SCORES = {
-    AuthoritySource.RHOTON: 0.95,
+# Default authority scores - can be customized at runtime via AuthorityRegistry
+DEFAULT_AUTHORITY_SCORES: dict[AuthoritySource, float] = {
+    # Tier 1: Definitive Masters
+    AuthoritySource.LAWTON: 1.00,
+    AuthoritySource.SAMII: 1.00,
+    AuthoritySource.AL_MEFTY: 1.00,
+    AuthoritySource.SPETZLER: 1.00,
+    AuthoritySource.RHOTON: 1.00,
+    # Tier 2: Major Textbooks
     AuthoritySource.YOUMANS: 0.90,
-    AuthoritySource.SCHMIDEK: 0.88,
+    AuthoritySource.SCHMIDEK: 0.90,
+    AuthoritySource.CONNOLLY: 0.90,
+    # Tier 3: Standard References
     AuthoritySource.GREENBERG: 0.85,
-    AuthoritySource.JOURNAL: 0.80,
-    AuthoritySource.TEXTBOOK: 0.75,
-    AuthoritySource.GENERAL: 0.60,
+    AuthoritySource.BENZEL: 0.80,
+    AuthoritySource.AO_SPINE: 0.80,
+    # Tier 4: General
+    AuthoritySource.JOURNAL: 0.75,
+    AuthoritySource.TEXTBOOK: 0.72,
+    AuthoritySource.GENERAL: 0.70,
 }
+
+
+@dataclass
+class AuthorityConfig:
+    """Configuration for a custom authority source."""
+    name: str
+    score: float
+    keywords: List[str]  # Keywords to match in document titles
+    tier: int = 4  # 1-4, for display grouping
+
+
+class AuthorityRegistry:
+    """
+    Customizable registry for authority sources and scores.
+
+    Allows runtime addition/modification of authors and their scores.
+    Default scores are preserved but can be overridden.
+
+    Usage:
+        registry = AuthorityRegistry()
+        registry.set_score(AuthoritySource.RHOTON, 1.0)
+        registry.add_custom("OSBORN", 0.88, ["osborn", "diagnostic imaging"])
+    """
+
+    def __init__(self):
+        self._scores: Dict[str, float] = {
+            k.value: v for k, v in DEFAULT_AUTHORITY_SCORES.items()
+        }
+        self._keywords: Dict[str, List[str]] = {
+            "LAWTON": ["lawton", "seven aneurysms"],
+            "SAMII": ["samii"],
+            "AL_MEFTY": ["al-mefty", "almefty"],
+            "SPETZLER": ["spetzler"],
+            "RHOTON": ["rhoton", "microsurgical anatomy"],
+            "YOUMANS": ["youmans"],
+            "SCHMIDEK": ["schmidek"],
+            "CONNOLLY": ["connolly"],
+            "GREENBERG": ["greenberg", "handbook"],
+            "BENZEL": ["benzel", "spine surgery"],
+            "AO_SPINE": ["ao spine", "aospine"],
+            "JOURNAL": ["journal", "j neurosurg", "neurosurgery"],
+            "TEXTBOOK": ["textbook"],
+        }
+        self._custom_sources: Dict[str, AuthorityConfig] = {}
+
+    def get_score(self, source: str) -> float:
+        """Get score for an authority source (enum value or custom name)."""
+        if isinstance(source, AuthoritySource):
+            source = source.value
+        return self._scores.get(source, DEFAULT_AUTHORITY_SCORES[AuthoritySource.GENERAL])
+
+    def set_score(self, source: AuthoritySource, score: float) -> None:
+        """Override score for an existing authority source."""
+        self._scores[source.value] = max(0.0, min(1.0, score))
+
+    def add_custom(self, name: str, score: float, keywords: List[str], tier: int = 3) -> None:
+        """Add a custom authority source."""
+        name_upper = name.upper()
+        self._scores[name_upper] = max(0.0, min(1.0, score))
+        self._keywords[name_upper] = [kw.lower() for kw in keywords]
+        self._custom_sources[name_upper] = AuthorityConfig(
+            name=name_upper, score=score, keywords=keywords, tier=tier
+        )
+
+    def remove_custom(self, name: str) -> bool:
+        """Remove a custom authority source. Returns True if removed."""
+        name_upper = name.upper()
+        if name_upper in self._custom_sources:
+            del self._custom_sources[name_upper]
+            del self._scores[name_upper]
+            del self._keywords[name_upper]
+            return True
+        return False
+
+    def detect_from_title(self, document_title: str) -> Tuple[str, float]:
+        """
+        Detect authority source from document title.
+        Returns (source_name, score).
+        """
+        if not document_title:
+            return "GENERAL", self._scores.get("GENERAL", 0.70)
+
+        title_lower = document_title.lower()
+
+        # Check all sources (built-in and custom) by score descending
+        sorted_sources = sorted(
+            self._keywords.items(),
+            key=lambda x: self._scores.get(x[0], 0),
+            reverse=True
+        )
+
+        for source_name, keywords in sorted_sources:
+            if any(kw in title_lower for kw in keywords):
+                return source_name, self._scores[source_name]
+
+        return "GENERAL", self._scores.get("GENERAL", 0.70)
+
+    def list_sources(self) -> List[Dict[str, Any]]:
+        """List all authority sources with their scores."""
+        sources = []
+        for source in AuthoritySource:
+            sources.append({
+                "name": source.value,
+                "score": self._scores.get(source.value, 0.70),
+                "keywords": self._keywords.get(source.value, []),
+                "is_custom": False
+            })
+        for name, config in self._custom_sources.items():
+            sources.append({
+                "name": name,
+                "score": config.score,
+                "keywords": config.keywords,
+                "tier": config.tier,
+                "is_custom": True
+            })
+        return sorted(sources, key=lambda x: x["score"], reverse=True)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Export registry state for persistence."""
+        return {
+            "scores": self._scores.copy(),
+            "keywords": {k: list(v) for k, v in self._keywords.items()},
+            "custom_sources": {
+                k: {"name": v.name, "score": v.score, "keywords": v.keywords, "tier": v.tier}
+                for k, v in self._custom_sources.items()
+            }
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AuthorityRegistry":
+        """Restore registry from exported state."""
+        registry = cls()
+        if "scores" in data:
+            registry._scores.update(data["scores"])
+        if "keywords" in data:
+            registry._keywords.update(data["keywords"])
+        if "custom_sources" in data:
+            for name, config in data["custom_sources"].items():
+                registry._custom_sources[name] = AuthorityConfig(**config)
+        return registry
+
+
+# Global registry instance - can be customized
+_authority_registry: Optional[AuthorityRegistry] = None
+
+
+def get_authority_registry() -> AuthorityRegistry:
+    """Get the global authority registry (creates if not exists)."""
+    global _authority_registry
+    if _authority_registry is None:
+        _authority_registry = AuthorityRegistry()
+    return _authority_registry
+
+
+def set_authority_registry(registry: AuthorityRegistry) -> None:
+    """Set a custom authority registry."""
+    global _authority_registry
+    _authority_registry = registry
+
+
+# Backward compatibility alias
+AUTHORITY_SCORES = DEFAULT_AUTHORITY_SCORES
 
 
 @dataclass
@@ -142,15 +329,23 @@ class SynthesisResult:
     references: List[Dict]
     figure_requests: List[FigureRequest] = field(default_factory=list)
     resolved_figures: List[Dict] = field(default_factory=list)
-    
+
     total_words: int = 0
     total_figures: int = 0
     total_citations: int = 0
     synthesis_time_ms: int = 0
-    
+
     verification_score: Optional[float] = None
     verification_issues: List[str] = field(default_factory=list)
     verified: bool = False
+
+    # Conflict detection results
+    conflict_report: Optional["ConflictReport"] = None
+
+    @property
+    def conflict_count(self) -> int:
+        """Number of detected conflicts."""
+        return self.conflict_report.count if self.conflict_report else 0
 
     def __post_init__(self):
         self.total_words = sum(s.word_count for s in self.sections)
@@ -174,6 +369,8 @@ class SynthesisResult:
             "verification_score": self.verification_score,
             "verification_issues": self.verification_issues,
             "verified": self.verified,
+            "conflict_count": self.conflict_count,
+            "conflict_report": self.conflict_report.to_dict() if self.conflict_report else None,
         }
 
     def to_markdown(self) -> str:
@@ -292,27 +489,23 @@ class ContextAdapter:
             "Measurements": ["measurement", "dimension", "mm", "cm"],
         }
 
-    def detect_authority_from_title(self, document_title: str) -> AuthoritySource:
-        """Detect authority level from document title."""
-        if not document_title:
-            return AuthoritySource.GENERAL
-            
-        title_lower = document_title.lower()
-        
-        if "rhoton" in title_lower or "microsurgical anatomy" in title_lower:
-            return AuthoritySource.RHOTON
-        elif "youmans" in title_lower:
-            return AuthoritySource.YOUMANS
-        elif "schmidek" in title_lower:
-            return AuthoritySource.SCHMIDEK
-        elif "greenberg" in title_lower or "handbook" in title_lower:
-            return AuthoritySource.GREENBERG
-        elif any(x in title_lower for x in ["journal", "j neurosurg"]):
-            return AuthoritySource.JOURNAL
-        elif "textbook" in title_lower:
-            return AuthoritySource.TEXTBOOK
-        else:
-            return AuthoritySource.GENERAL
+    def detect_authority_from_title(self, document_title: str) -> Tuple[AuthoritySource, float]:
+        """
+        Detect authority level from document title using the global registry.
+
+        Returns:
+            Tuple of (AuthoritySource enum or GENERAL, score)
+        """
+        registry = get_authority_registry()
+        source_name, score = registry.detect_from_title(document_title)
+
+        # Try to map to enum, fallback to GENERAL for custom sources
+        try:
+            authority = AuthoritySource(source_name)
+        except ValueError:
+            authority = AuthoritySource.GENERAL
+
+        return authority, score
 
     def classify_section(self, content: str, template_type: TemplateType) -> str:
         """Classify content into the most appropriate template section."""
@@ -364,12 +557,13 @@ class ContextAdapter:
                 continue
 
             # Access SearchResult fields directly (no conversion!)
-            authority = self.detect_authority_from_title(result.document_title)
+            # detect_authority_from_title now returns (authority_enum, score)
+            authority, detected_score = self.detect_authority_from_title(result.document_title)
 
-            # Use existing authority_score from SearchResult, or derive from title
+            # Use detected score, or SearchResult's authority_score if explicitly set
             authority_score = result.authority_score
-            if authority_score == 1.0:  # Default value, might need override
-                authority_score = AUTHORITY_SCORES.get(authority, 0.6)
+            if authority_score == 1.0:  # Default value, use detected score
+                authority_score = detected_score
 
             # Classify into section
             section = self.classify_section(result.content, template_type)
@@ -551,15 +745,18 @@ class SynthesisEngine:
         verification_client=None,
         model: str = "claude-sonnet-4-20250514",
         calls_per_minute: int = 50,
+        deep_conflict_check: bool = False,
     ):
         self.client = anthropic_client
         self.model = model
         self.rate_limiter = RateLimiter(calls_per_minute=calls_per_minute)
         self.verification_client = verification_client
         self.has_verification = verification_client is not None
-        
+        self.deep_conflict_check = deep_conflict_check
+
         self.adapter = ContextAdapter()
         self.figure_resolver = FigureResolver()
+        self.conflict_handler = ConflictHandler(anthropic_client if deep_conflict_check else None)
 
     async def _call_claude(self, prompt: str, max_tokens: int = 4000) -> str:
         """Rate-limited Claude API call."""
@@ -635,7 +832,17 @@ class SynthesisEngine:
                 all_figure_requests,
                 context["image_catalog"],
             )
-        
+
+        # Stage 5: Conflict Detection
+        # Mode: "llm" if deep_conflict_check enabled, else "heuristic" (free)
+        detection_mode = "llm" if self.deep_conflict_check else "heuristic"
+        logger.info(f"Running conflict detection (mode={detection_mode})")
+        conflict_report = await self.conflict_handler.detect_conflicts(
+            sections, mode=detection_mode
+        )
+        if conflict_report.count > 0:
+            logger.info(f"Detected {conflict_report.count} conflicts")
+
         # Build result
         result = SynthesisResult(
             topic=topic,
@@ -647,21 +854,23 @@ class SynthesisEngine:
             figure_requests=all_figure_requests,
             resolved_figures=resolved_figures,
             synthesis_time_ms=int((time() - start_time) * 1000),
+            conflict_report=conflict_report,
         )
-        
-        # Stage 5: Optional verification
+
+        # Stage 6: Optional verification
         if include_verification:
             if self.has_verification:
                 logger.info("Running Gemini verification")
                 result = await self._verify(result)
             else:
                 logger.warning("Verification requested but Gemini client not available")
-        
+
         logger.info(
             f"Synthesis complete: {result.total_words} words, "
-            f"{result.total_figures} figures, {result.synthesis_time_ms}ms"
+            f"{result.total_figures} figures, {result.conflict_count} conflicts, "
+            f"{result.synthesis_time_ms}ms"
         )
-        
+
         return result
 
     async def _generate_title_abstract(
