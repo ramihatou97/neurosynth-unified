@@ -20,8 +20,9 @@ from .tui_weights import get_tui_weight, get_tui_name
 
 logger = logging.getLogger(__name__)
 
-# Module-level extraction cache (LRU with max 2000 entries)
+# Module-level extraction cache (FIFO eviction with max 2000 entries)
 # Key: MD5 hash of text, Value: tuple of UMLSEntity objects
+# Note: Uses dict iteration order (insertion order) for FIFO eviction
 _extraction_cache: dict = {}
 _CACHE_MAX_SIZE = 2000
 
@@ -201,10 +202,10 @@ class UMLSExtractor:
             doc = self._nlp(text)
             entities = self._extract_from_doc(doc)
 
-            # Store in cache (with LRU eviction)
+            # Store in cache (with FIFO eviction)
             if use_cache and cache_key:
                 if len(_extraction_cache) >= _CACHE_MAX_SIZE:
-                    # Simple eviction: remove oldest entry
+                    # FIFO eviction: remove first inserted entry
                     oldest_key = next(iter(_extraction_cache))
                     del _extraction_cache[oldest_key]
                 _extraction_cache[cache_key] = tuple(entities)

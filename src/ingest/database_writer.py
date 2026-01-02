@@ -5,16 +5,20 @@ NeuroSynth Unified - Pipeline Database Writer
 Adapter to write Phase 1 pipeline output directly to PostgreSQL.
 Integrates with the existing pipeline while maintaining backward compatibility.
 
+IMPORTANT: All database writes are wrapped in a single transaction to ensure
+atomicity. If any step fails, the entire operation is rolled back, preventing
+orphaned chunks/images/links in the database.
+
 Usage:
     from src.ingest.database_writer import PipelineDatabaseWriter
-    
+
     # Create writer
     writer = PipelineDatabaseWriter(connection_string)
     await writer.connect()
-    
-    # Write pipeline result
+
+    # Write pipeline result (atomic - all or nothing)
     doc_id = await writer.write_pipeline_result(result, source_path)
-    
+
     # Or use as pipeline callback
     pipeline = NeuroIngestPipeline(
         config=config,
@@ -138,111 +142,129 @@ class PipelineDatabaseWriter:
         on_progress: callable = None
     ) -> UUID:
         """
-        Write complete pipeline result to database.
-        
+        Write complete pipeline result to database atomically.
+
+        All writes are wrapped in a single transaction. If ANY step fails,
+        the entire operation is rolled back, preventing orphaned data.
+
         Args:
             result: PipelineResult object from Phase 1 pipeline
             source_path: Override source path (uses result.source_path if not provided)
             title: Document title
             on_progress: Progress callback(stage, current, total)
-        
+
         Returns:
             Document UUID
-        
+
         Raises:
-            Exception if write fails (transaction rolled back)
+            Exception if write fails (transaction is automatically rolled back)
         """
         if not self._connected:
             await self.connect()
-        
+
         # Reset ID mappings
         self._chunk_id_map = {}
         self._image_id_map = {}
-        
+
         # Extract data from result
         source_path = source_path or getattr(result, 'source_path', 'unknown')
         chunks = getattr(result, 'chunks', []) or []
         images = getattr(result, 'images', []) or []
         links = getattr(result, 'links', []) or []
-        
+
         # Get metadata
         processing_time = getattr(result, 'processing_time_seconds', None)
         total_pages = getattr(result, 'total_pages', 0)
-        
+
         logger.info(f"Writing pipeline result: {len(chunks)} chunks, {len(images)} images, {len(links)} links")
-        
-        try:
-            # Step 1: Create document
-            if on_progress:
-                on_progress("document", 0, 1)
-            
-            doc_id = await self._create_document(
-                source_path=source_path,
-                title=title,
-                total_pages=total_pages,
-                processing_time=processing_time,
-                result=result
-            )
-            
-            if on_progress:
-                on_progress("document", 1, 1)
-            
-            # Step 2: Insert chunks
-            if chunks:
-                if on_progress:
-                    on_progress("chunks", 0, len(chunks))
 
-                await self._insert_chunks(doc_id, chunks, on_progress)
+        # === ATOMIC TRANSACTION BLOCK ===
+        # All writes happen within a single transaction.
+        # On ANY failure, PostgreSQL automatically rolls back ALL changes.
+        async with self._db.transaction() as conn:
+            try:
+                # Step 1: Create document
+                if on_progress:
+                    on_progress("document", 0, 1)
 
-            # Step 2.5: Populate entities from chunk CUIs
-            if chunks:
-                if on_progress:
-                    on_progress("entities", 0, 1)
-                await self._populate_entities(chunks, on_progress)
-                if on_progress:
-                    on_progress("entities", 1, 1)
+                doc_id = await self._create_document_tx(
+                    conn=conn,
+                    source_path=source_path,
+                    title=title,
+                    total_pages=total_pages,
+                    processing_time=processing_time,
+                    result=result
+                )
 
-            # Step 3: Insert images
-            if images:
                 if on_progress:
-                    on_progress("images", 0, len(images))
-                
-                await self._insert_images(doc_id, images, on_progress)
-            
-            # Step 4: Insert links (with ID remapping)
-            if links:
-                if on_progress:
-                    on_progress("links", 0, len(links))
-                
-                await self._insert_links(links, on_progress)
-            
-            # Step 5: Update document stats
-            await self.repos.documents.update_stats(doc_id)
-            
-            # Step 6: Optional file export
-            if self.export_files and self.export_dir:
+                    on_progress("document", 1, 1)
+
+                # Step 2: Insert chunks
+                if chunks:
+                    if on_progress:
+                        on_progress("chunks", 0, len(chunks))
+
+                    await self._insert_chunks_tx(conn, doc_id, chunks, on_progress)
+
+                # Step 2.5: Populate entities from chunk CUIs (within transaction)
+                if chunks:
+                    if on_progress:
+                        on_progress("entities", 0, 1)
+                    await self._populate_entities_tx(conn, chunks, on_progress)
+                    if on_progress:
+                        on_progress("entities", 1, 1)
+
+                # Step 3: Insert images
+                if images:
+                    if on_progress:
+                        on_progress("images", 0, len(images))
+
+                    await self._insert_images_tx(conn, doc_id, images, on_progress)
+
+                # Step 4: Insert links (with ID remapping)
+                if links:
+                    if on_progress:
+                        on_progress("links", 0, len(links))
+
+                    await self._insert_links_tx(conn, links, on_progress)
+
+                # Step 5: Update document stats (within transaction)
+                await self._update_document_stats_tx(conn, doc_id)
+
+                logger.info(f"Transaction committed: document {doc_id} written successfully")
+
+            except Exception as e:
+                # Transaction will auto-rollback, but log the error
+                logger.error(f"Transaction rolled back due to error: {e}")
+                raise
+
+        # Step 6: Optional file export (outside transaction - non-critical)
+        if self.export_files and self.export_dir:
+            try:
                 await self._export_files(doc_id, result)
-            
-            logger.info(f"Successfully wrote document {doc_id} to database")
-            return doc_id
-            
-        except Exception as e:
-            logger.error(f"Failed to write pipeline result: {e}")
-            raise
+            except Exception as e:
+                logger.warning(f"File export failed (non-fatal): {e}")
+
+        logger.info(f"Successfully wrote document {doc_id} to database")
+        return doc_id
     
     # =========================================================================
-    # Internal Methods
+    # Transaction-Aware Methods (_tx suffix)
+    # These methods take an explicit connection and run within a transaction.
     # =========================================================================
-    
-    async def _create_document(
+
+    async def _create_document_tx(
         self,
+        conn,  # asyncpg.Connection
         source_path: str,
         title: str,
         total_pages: int,
         processing_time: float,
         result
     ) -> UUID:
-        """Create document record."""
+        """Create document record within transaction."""
+        import json
+
         # Build metadata from result
         metadata = {
             'phase1_document_id': getattr(result, 'document_id', None),
@@ -253,154 +275,268 @@ class PipelineDatabaseWriter:
             'image_count': len(getattr(result, 'images', []) or []),
             'link_count': len(getattr(result, 'links', []) or [])
         }
-        
-        # Check if document already exists
-        existing = await self.repos.documents.get_by_source_path(source_path)
+
+        # Check if document already exists (within same transaction)
+        existing = await conn.fetchrow(
+            "SELECT id FROM documents WHERE source_path = $1",
+            source_path
+        )
         if existing:
-            logger.warning(f"Document already exists for {source_path}, updating...")
-            # Could implement update logic here
-            # For now, delete and recreate
-            await self.repos.documents.delete_with_cascade(existing['id'])
-        
-        doc = await self.repos.documents.create({
-            'id': uuid4(),
-            'source_path': source_path,
-            'title': title or Path(source_path).stem,
-            'total_pages': total_pages,
-            'processing_time_seconds': processing_time,
-            'metadata': metadata
-        })
-        
-        return doc['id']
-    
-    async def _insert_chunks(
+            logger.warning(f"Document already exists for {source_path}, deleting cascade...")
+            # Delete cascading (links, chunks, images) within transaction
+            # Note: chunk_image_links table (not 'links' view)
+            await conn.execute("DELETE FROM chunk_image_links WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = $1)", existing['id'])
+            await conn.execute("DELETE FROM chunks WHERE document_id = $1", existing['id'])
+            await conn.execute("DELETE FROM images WHERE document_id = $1", existing['id'])
+            await conn.execute("DELETE FROM documents WHERE id = $1", existing['id'])
+
+        doc_id = uuid4()
+        doc_title = title or Path(source_path).stem
+
+        await conn.execute(
+            """
+            INSERT INTO documents (id, source_path, title, total_pages, processing_time_seconds, metadata, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+            """,
+            doc_id, source_path, doc_title, total_pages, processing_time, json.dumps(metadata)
+        )
+
+        logger.debug(f"Created document {doc_id} within transaction")
+        return doc_id
+
+    async def _insert_chunks_tx(
         self,
+        conn,  # asyncpg.Connection
         doc_id: UUID,
         chunks: List,
         on_progress: callable = None
     ) -> int:
-        """Insert chunks and build ID mapping."""
-        chunk_records = []
-        
+        """Insert chunks within transaction using batch insert."""
+        import json
+
+        if not chunks:
+            return 0
+
+        # Prepare all chunk records with ID mapping
+        records = []
         for i, chunk in enumerate(chunks):
-            # Extract data from chunk object
             chunk_data = self._extract_chunk_data(chunk)
-            
-            # Generate new UUID
+
             new_id = uuid4()
             old_id = str(chunk_data.get('id', i))
             self._chunk_id_map[old_id] = new_id
-            
-            chunk_data['id'] = new_id
-            chunk_records.append(chunk_data)
-            
+
+            # Prepare embedding for pgvector (1024d)
+            embedding = chunk_data.get('embedding')
+            if embedding:
+                if isinstance(embedding, np.ndarray):
+                    embedding = embedding.tolist()
+                embedding = '[' + ','.join(str(float(x)) for x in embedding) + ']'
+
+            records.append((
+                new_id,
+                doc_id,
+                chunk_data.get('content', ''),
+                chunk_data.get('content_hash'),
+                chunk_data.get('page_number'),
+                chunk_data.get('chunk_index', i),  # maps to sequence_in_doc
+                chunk_data.get('start_char'),
+                chunk_data.get('end_char'),
+                chunk_data.get('chunk_type'),
+                chunk_data.get('specialty'),
+                embedding,
+                chunk_data.get('cuis', []),
+                json.dumps(chunk_data.get('entities', [])),
+                json.dumps(chunk_data.get('metadata', {})),
+                chunk_data.get('summary')
+            ))
+
             if on_progress and (i + 1) % 50 == 0:
                 on_progress("chunks", i + 1, len(chunks))
-        
-        # Batch insert
-        count = await self.repos.chunks.create_many_for_document(doc_id, chunk_records)
-        
+
+        # Batch insert using executemany (schema has created_at with default, no updated_at)
+        await conn.executemany(
+            """
+            INSERT INTO chunks (
+                id, document_id, content, content_hash, page_number, sequence_in_doc,
+                start_char, end_char, chunk_type, specialty, embedding, cuis,
+                entities, metadata, summary
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13::jsonb, $14::jsonb, $15)
+            """,
+            records
+        )
+
         if on_progress:
             on_progress("chunks", len(chunks), len(chunks))
-        
-        logger.info(f"Inserted {count} chunks")
-        return count
-    
-    async def _insert_images(
+
+        logger.debug(f"Inserted {len(records)} chunks within transaction")
+        return len(records)
+
+    async def _insert_images_tx(
         self,
+        conn,  # asyncpg.Connection
         doc_id: UUID,
         images: List,
         on_progress: callable = None
     ) -> int:
-        """Insert images and build ID mapping."""
-        image_records = []
-        
+        """Insert images within transaction using batch insert."""
+        import json
+
+        if not images:
+            return 0
+
+        records = []
         for i, image in enumerate(images):
-            # Extract data from image object
             image_data = self._extract_image_data(image)
-            
-            # Generate new UUID
+
             new_id = uuid4()
             old_id = str(image_data.get('id', i))
             self._image_id_map[old_id] = new_id
-            
-            image_data['id'] = new_id
-            image_records.append(image_data)
-            
+
+            # Prepare embeddings for pgvector
+            embedding = image_data.get('embedding')  # 512d BiomedCLIP
+            if embedding:
+                if isinstance(embedding, np.ndarray):
+                    embedding = embedding.tolist()
+                embedding = '[' + ','.join(str(float(x)) for x in embedding) + ']'
+
+            caption_embedding = image_data.get('caption_embedding')  # 1024d Voyage
+            if caption_embedding:
+                if isinstance(caption_embedding, np.ndarray):
+                    caption_embedding = caption_embedding.tolist()
+                caption_embedding = '[' + ','.join(str(float(x)) for x in caption_embedding) + ']'
+
+            records.append((
+                new_id,
+                doc_id,
+                image_data.get('file_path', ''),
+                image_data.get('file_name'),
+                image_data.get('content_hash'),
+                image_data.get('width'),
+                image_data.get('height'),
+                image_data.get('format'),
+                image_data.get('page_number'),
+                image_data.get('image_index', i),
+                image_data.get('image_type'),
+                image_data.get('is_decorative', False),
+                image_data.get('vlm_caption'),
+                image_data.get('caption_summary'),
+                embedding,
+                caption_embedding,
+                json.dumps(image_data.get('metadata', {}))
+            ))
+
             if on_progress and (i + 1) % 20 == 0:
                 on_progress("images", i + 1, len(images))
-        
-        # Batch insert
-        count = await self.repos.images.create_many_for_document(doc_id, image_records)
-        
+
+        # Schema: id, document_id, file_path, file_name, content_hash, width, height, format,
+        # page_number, image_index, image_type, is_decorative, vlm_caption, caption_summary,
+        # embedding (512d), caption_embedding (1024d), metadata
+        await conn.executemany(
+            """
+            INSERT INTO images (
+                id, document_id, file_path, file_name, content_hash, width, height, format,
+                page_number, image_index, image_type, is_decorative, vlm_caption,
+                caption_summary, embedding, caption_embedding, metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                    $15::vector, $16::vector, $17::jsonb)
+            """,
+            records
+        )
+
         if on_progress:
             on_progress("images", len(images), len(images))
-        
-        logger.info(f"Inserted {count} images")
-        return count
-    
-    async def _insert_links(
+
+        logger.debug(f"Inserted {len(records)} images within transaction")
+        return len(records)
+
+    async def _insert_links_tx(
         self,
+        conn,  # asyncpg.Connection
         links: List,
         on_progress: callable = None
     ) -> int:
-        """Insert links with ID remapping."""
-        link_records = []
-        
-        for i, link in enumerate(links):
+        """Insert links within transaction with ID remapping.
+
+        Note: Uses chunk_image_links table (the 'links' view is read-only).
+        """
+        import json
+
+        if not links:
+            return 0
+
+        records = []
+        for link in links:
             link_data = self._extract_link_data(link)
-            
-            # Remap IDs
+
             old_chunk_id = str(link_data.get('chunk_id', ''))
             old_image_id = str(link_data.get('image_id', ''))
-            
+
             if old_chunk_id in self._chunk_id_map and old_image_id in self._image_id_map:
-                link_data['chunk_id'] = self._chunk_id_map[old_chunk_id]
-                link_data['image_id'] = self._image_id_map[old_image_id]
-                link_records.append(link_data)
-        
-        if not link_records:
+                # Build metadata including additional scores if available
+                link_metadata = link_data.get('metadata', {})
+                if link_data.get('proximity_score') is not None:
+                    link_metadata['proximity_score'] = link_data['proximity_score']
+                if link_data.get('semantic_score') is not None:
+                    link_metadata['semantic_score'] = link_data['semantic_score']
+                if link_data.get('cui_overlap_score') is not None:
+                    link_metadata['cui_overlap_score'] = link_data['cui_overlap_score']
+
+                records.append((
+                    uuid4(),
+                    self._chunk_id_map[old_chunk_id],
+                    self._image_id_map[old_image_id],
+                    link_data.get('score', 0.0),  # maps to relevance_score
+                    link_data.get('link_type', 'unknown'),
+                    json.dumps(link_metadata)
+                ))
+
+        if not records:
             logger.warning("No links could be mapped - check ID consistency")
             return 0
 
-        # Batch insert
-        count = await self.repos.links.create_many(link_records)
+        # Insert into chunk_image_links table (not the 'links' view)
+        await conn.executemany(
+            """
+            INSERT INTO chunk_image_links (
+                id, chunk_id, image_id, relevance_score, link_type, link_metadata
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            """,
+            records
+        )
 
         if on_progress:
             on_progress("links", len(links), len(links))
 
-        logger.info(f"Inserted {count} links (from {len(links)} original)")
-        return count
+        logger.debug(f"Inserted {len(records)} links within transaction")
+        return len(records)
 
-    async def _populate_entities(
+    async def _populate_entities_tx(
         self,
+        conn,  # asyncpg.Connection
         chunks: List,
         on_progress: callable = None
     ) -> int:
         """
-        Extract unique entities from chunks and upsert to entities table.
+        Populate entities table within transaction.
 
-        This populates the entities table from:
-        1. UMLS CUIs found in chunks (when SciSpacy works)
-        2. Regex-extracted entities (as fallback when no CUIs)
-
-        This enables the Entities tab to show extracted medical concepts.
+        Uses UPSERT (INSERT ... ON CONFLICT) for atomic entity management.
         """
         import hashlib
 
-        # Create entity repository
-        entity_repo = EntityRepository(self._db)
-
         # Collect all entities from chunks
-        entities_data = []
-        seen_regex_entities = set()  # Track unique regex entities
+        entity_data = {}  # cui -> {name, semantic_type, tui, count}
+        seen_regex = set()
 
         for chunk in chunks:
             chunk_data = self._extract_chunk_data(chunk) if not isinstance(chunk, dict) else chunk
             cuis = chunk_data.get('cuis', [])
             entities = chunk_data.get('entities', [])
 
-            # Build entity lookup from entities list if available
+            # Build lookup from entities list
             entity_lookup = {}
             if entities:
                 for e in entities:
@@ -413,20 +549,20 @@ class PipelineDatabaseWriter:
                                 'tui': e.get('tui')
                             }
 
-            # Add UMLS entities (with real CUIs)
+            # Add UMLS entities
             for cui in cuis:
                 if cui:
-                    entity_info = entity_lookup.get(cui, {})
-                    entities_data.append({
-                        'cui': cui,
-                        'name': entity_info.get('name', cui),
-                        'semantic_type': entity_info.get('semantic_type'),
-                        'tui': entity_info.get('tui'),
-                        'chunk_count_increment': 1
-                    })
+                    info = entity_lookup.get(cui, {})
+                    if cui not in entity_data:
+                        entity_data[cui] = {
+                            'name': info.get('name', cui),
+                            'semantic_type': info.get('semantic_type'),
+                            'tui': info.get('tui'),
+                            'count': 0
+                        }
+                    entity_data[cui]['count'] += 1
 
-            # FALLBACK: Add regex-extracted entities when no CUIs available
-            # This ensures entities are shown even when SciSpacy is unavailable
+            # Fallback: regex-extracted entities when no CUIs
             if not cuis and entities:
                 for e in entities:
                     if isinstance(e, dict):
@@ -434,32 +570,123 @@ class PipelineDatabaseWriter:
                         category = e.get('category') or e.get('type') or 'EXTRACTED'
 
                         if text and len(text) >= 2:
-                            # Generate synthetic CUI from text hash
                             text_normalized = text.lower()
                             text_hash = hashlib.md5(text_normalized.encode()).hexdigest()[:8]
                             synthetic_cui = f"REGEX_{text_hash}"
 
-                            # Track to avoid duplicates within same chunk
-                            entity_key = (synthetic_cui, text_normalized)
-                            if entity_key not in seen_regex_entities:
-                                seen_regex_entities.add(entity_key)
-                                entities_data.append({
-                                    'cui': synthetic_cui,
-                                    'name': text,
-                                    'semantic_type': category,
-                                    'tui': None,
-                                    'chunk_count_increment': 1
-                                })
+                            if synthetic_cui not in seen_regex:
+                                seen_regex.add(synthetic_cui)
+                                if synthetic_cui not in entity_data:
+                                    entity_data[synthetic_cui] = {
+                                        'name': text,
+                                        'semantic_type': category,
+                                        'tui': None,
+                                        'count': 0
+                                    }
+                                entity_data[synthetic_cui]['count'] += 1
 
-        if not entities_data:
-            logger.info("No entities found in chunks")
+        if not entity_data:
+            logger.debug("No entities found in chunks")
             return 0
 
-        # Batch upsert
-        count = await entity_repo.upsert_many(entities_data)
+        # Batch upsert using executemany with ON CONFLICT
+        records = [
+            (cui, data['name'], data['semantic_type'], data['tui'], data['count'])
+            for cui, data in entity_data.items()
+        ]
 
-        logger.info(f"Populated {count} unique entities from {len(entities_data)} occurrences")
-        return count
+        await conn.executemany(
+            """
+            INSERT INTO entities (id, cui, name, semantic_type, tui, chunk_count, created_at, updated_at)
+            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW(), NOW())
+            ON CONFLICT (cui) DO UPDATE SET
+                chunk_count = entities.chunk_count + EXCLUDED.chunk_count,
+                updated_at = NOW()
+            """,
+            records
+        )
+
+        logger.debug(f"Upserted {len(records)} entities within transaction")
+        return len(records)
+
+    async def _update_document_stats_tx(self, conn, doc_id: UUID) -> None:
+        """Update document statistics within transaction."""
+        stats = await conn.fetchrow(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM chunks WHERE document_id = $1) as chunk_count,
+                (SELECT COUNT(*) FROM images WHERE document_id = $1) as image_count,
+                (SELECT COUNT(*) FROM chunk_image_links WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = $1)) as link_count
+            """,
+            doc_id
+        )
+
+        # Schema uses: total_chunks, total_images (not chunk_count, image_count)
+        await conn.execute(
+            """
+            UPDATE documents
+            SET total_chunks = $2, total_images = $3, updated_at = NOW()
+            WHERE id = $1
+            """,
+            doc_id, stats['chunk_count'], stats['image_count']
+        )
+
+        logger.debug(f"Updated document stats: {stats['chunk_count']} chunks, {stats['image_count']} images, {stats['link_count']} links")
+
+    # =========================================================================
+    # Legacy Internal Methods (for backward compatibility)
+    # These call the _tx versions with a new connection when not in a transaction
+    # =========================================================================
+
+    async def _create_document(
+        self,
+        source_path: str,
+        title: str,
+        total_pages: int,
+        processing_time: float,
+        result
+    ) -> UUID:
+        """Create document record (legacy - creates its own transaction)."""
+        async with self._db.transaction() as conn:
+            return await self._create_document_tx(conn, source_path, title, total_pages, processing_time, result)
+    
+    async def _insert_chunks(
+        self,
+        doc_id: UUID,
+        chunks: List,
+        on_progress: callable = None
+    ) -> int:
+        """Insert chunks (legacy - creates its own transaction)."""
+        async with self._db.transaction() as conn:
+            return await self._insert_chunks_tx(conn, doc_id, chunks, on_progress)
+
+    async def _insert_images(
+        self,
+        doc_id: UUID,
+        images: List,
+        on_progress: callable = None
+    ) -> int:
+        """Insert images (legacy - creates its own transaction)."""
+        async with self._db.transaction() as conn:
+            return await self._insert_images_tx(conn, doc_id, images, on_progress)
+
+    async def _insert_links(
+        self,
+        links: List,
+        on_progress: callable = None
+    ) -> int:
+        """Insert links (legacy - creates its own transaction)."""
+        async with self._db.transaction() as conn:
+            return await self._insert_links_tx(conn, links, on_progress)
+
+    async def _populate_entities(
+        self,
+        chunks: List,
+        on_progress: callable = None
+    ) -> int:
+        """Populate entities (legacy - creates its own transaction)."""
+        async with self._db.transaction() as conn:
+            return await self._populate_entities_tx(conn, chunks, on_progress)
 
     # =========================================================================
     # Data Extraction

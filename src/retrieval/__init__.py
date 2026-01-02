@@ -5,11 +5,16 @@ NeuroSynth Unified - Retrieval Layer
 Semantic search and retrieval components.
 
 Components:
-- faiss_manager.py: FAISS index management
-- search_service.py: Unified search interface
+- search_service.py: Unified search interface with pgvector HNSW (primary)
+- faiss_manager.py: FAISS index management (deprecated, retained for rollback)
 - reranker.py: Result re-ranking
 
-Architecture:
+Architecture (pgvector HNSW - Default):
+    Query → Embed → pgvector HNSW → Results (with filters)
+                          ↓
+                   Re-rank (optional) → Top K
+
+Architecture (FAISS - Legacy, disabled by default):
     Query → Embed → FAISS (fast ANN) → Candidates
                           ↓
                    pgvector (filter) → Results
@@ -17,24 +22,21 @@ Architecture:
                    Re-rank (optional) → Top K
 
 Quick Start:
-    from src.retrieval import SearchService, FAISSManager, VoyageEmbedder
-    
-    # Initialize components
-    faiss = FAISSManager("./indexes")
-    faiss.load()  # Load pre-built indexes
-    
+    from src.retrieval import SearchService, VoyageEmbedder, PostgresVectorSearcher
+
+    # Initialize with pgvector (recommended)
     embedder = VoyageEmbedder(api_key="...")
-    service = SearchService(db, faiss, embedder)
-    
+    service = SearchService(db, embedder=embedder, use_pgvector=True)
+
     # Search
     results = await service.search(
         query="retrosigmoid approach",
         mode="hybrid",
         top_k=10
     )
-    
+
     for r in results.results:
-        print(f"{r.score:.3f} - {r.content[:100]}...")
+        print(f"{r.final_score:.3f} - {r.content[:100]}...")
 """
 
 # FAISS Manager
@@ -54,7 +56,9 @@ from src.retrieval.search_service import (
     SearchResult,
     SearchResponse,
     SearchMode,
-    VoyageEmbedder
+    VoyageEmbedder,
+    PostgresVectorSearcher,
+    EMBEDDING_DIMENSIONS
 )
 
 # Rerankers
@@ -68,22 +72,24 @@ from src.retrieval.reranker import (
 )
 
 __all__ = [
-    # FAISS
+    # FAISS (deprecated, retained for rollback)
     'FAISSManager',
     'FAISSIndex',
     'FAISSIndexConfig',
     'TEXT_CONFIG',
-    'IMAGE_CONFIG', 
+    'IMAGE_CONFIG',
     'CAPTION_CONFIG',
-    
-    # Search
+
+    # Search (pgvector HNSW - primary)
     'SearchService',
     'SearchFilters',
     'SearchResult',
     'SearchResponse',
     'SearchMode',
     'VoyageEmbedder',
-    
+    'PostgresVectorSearcher',
+    'EMBEDDING_DIMENSIONS',
+
     # Rerankers
     'BaseReranker',
     'CrossEncoderReranker',

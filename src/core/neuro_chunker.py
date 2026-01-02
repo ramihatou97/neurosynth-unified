@@ -378,7 +378,98 @@ class NeuroSemanticChunker:
         self.sentence_split_pattern = re.compile(
             r'(?<!\bDr)(?<!\bFig)(?<!\bNo)(?<!\bal)(?<!\bapprox)(?<!\bvs)(?<!\bet)(?<!\bi\.e)(?<!\be\.g)\.\s+(?=[A-Z])'
         )
-    
+
+    def _get_target_for_section(self, title: str, text: str) -> int:
+        """
+        Determine the optimal target token count based on content type.
+
+        Uses a two-pass detection strategy:
+        1. Title keywords (high confidence) - check section title first
+        2. Content signals (fallback) - analyze text for procedural/anatomical density
+
+        Returns:
+            Target token count (procedure=700, anatomy=550, pathology=650, default=600)
+        """
+        title_lower = title.lower() if title else ""
+        text_lower = text.lower() if text else ""
+
+        # ========== PASS 1: Title-based detection (high confidence) ==========
+
+        # Procedure indicators in title
+        procedure_title_signals = [
+            "technique", "procedure", "surgical", "approach", "operative",
+            "step", "method", "how to", "positioning", "exposure"
+        ]
+        if any(signal in title_lower for signal in procedure_title_signals):
+            return self.config.procedure_target_tokens  # 700
+
+        # Anatomy indicators in title
+        anatomy_title_signals = [
+            "anatomy", "anatomic", "structure", "relationship", "topograph",
+            "morpholog", "course of", "origin", "branches of"
+        ]
+        if any(signal in title_lower for signal in anatomy_title_signals):
+            return self.config.anatomy_target_tokens  # 550
+
+        # Pathology indicators in title
+        pathology_title_signals = [
+            "pathology", "pathological", "disease", "lesion", "tumor",
+            "malformation", "syndrome", "deficit", "disorder"
+        ]
+        if any(signal in title_lower for signal in pathology_title_signals):
+            return self.config.pathology_target_tokens  # 650
+
+        # Clinical indicators in title
+        clinical_title_signals = [
+            "clinical", "presentation", "symptom", "diagnosis", "management",
+            "treatment", "outcome", "prognosis", "complication"
+        ]
+        if any(signal in title_lower for signal in clinical_title_signals):
+            return self.config.clinical_target_tokens  # 600
+
+        # ========== PASS 2: Content-based detection (fallback) ==========
+        # Count signal density to determine content type
+
+        # Procedure signals in content
+        procedure_signals = [
+            "incision", "dissect", "retract", "expose", "identify",
+            "mobilize", "ligate", "resect", "clip", "coagulate",
+            "elevate", "drill", "remove", "position the patient",
+            "make a", "next step", "then"
+        ]
+        procedure_density = sum(1 for s in procedure_signals if s in text_lower)
+
+        # Anatomy signals in content
+        anatomy_signals = [
+            "arises from", "courses", "enters", "exits", "passes",
+            "runs along", "lies", "situated", "medial to", "lateral to",
+            "anterior to", "posterior to", "superficial to", "deep to",
+            "originates", "terminates", "divides into", "gives off"
+        ]
+        anatomy_density = sum(1 for s in anatomy_signals if s in text_lower)
+
+        # Pathology signals in content
+        pathology_signals = [
+            "causes", "results in", "leads to", "presents with",
+            "manifests as", "characterized by", "associated with",
+            "compresses", "invades", "infiltrates", "displaces"
+        ]
+        pathology_density = sum(1 for s in pathology_signals if s in text_lower)
+
+        # Decision based on highest density (threshold of 2)
+        max_density = max(procedure_density, anatomy_density, pathology_density)
+
+        if max_density >= 2:
+            if procedure_density == max_density:
+                return self.config.procedure_target_tokens  # 700
+            elif anatomy_density == max_density:
+                return self.config.anatomy_target_tokens  # 550
+            elif pathology_density == max_density:
+                return self.config.pathology_target_tokens  # 650
+
+        # Default target
+        return self.config.target_tokens  # 600
+
     def chunk_section(
         self,
         section_text: str,
@@ -388,34 +479,38 @@ class NeuroSemanticChunker:
     ) -> List[SemanticChunk]:
         """
         Process a section of text into semantic chunks.
-        
+
         Args:
             section_text: The text content to chunk
             section_title: Title of the section (for context)
             page_num: Page number for reference
             doc_id: Document ID for linking
-            
+
         Returns:
             List of SemanticChunk objects
         """
         # Clean and split into sentences
         sentences = self._split_sentences(section_text)
-        
+
         if not sentences:
             return []
-        
+
+        # Get type-specific target tokens based on content analysis
+        target_tokens = self._get_target_for_section(section_title, section_text)
+        logger.debug(f"Chunking section '{section_title[:50]}...' with target={target_tokens} tokens")
+
         chunks = []
         current_buffer: List[str] = []
         current_word_count = 0
-        
+
         for i, sentence in enumerate(sentences):
             sent_word_count = len(sentence.split())
-            
+
             # Check if this sentence depends on the previous one
             is_dependent = self._check_dependency(sentence)
-            
+
             # Decision: Should we cut here?
-            if current_word_count + sent_word_count > self.config.target_tokens:
+            if current_word_count + sent_word_count > target_tokens:
                 
                 # CASE A: Hard limit reached - must cut
                 if current_word_count + sent_word_count > self.config.max_tokens:

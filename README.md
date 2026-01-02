@@ -361,10 +361,38 @@ service = SearchService(
 
 | Operation | Latency | Notes |
 |-----------|---------|-------|
-| FAISS search | <10ms | 100K vectors |
+| pgvector HNSW search | <10ms | Default backend |
+| FAISS search | <10ms | At scale (>500K) |
 | Hybrid search | ~50ms | With filtering |
 | RAG response | ~2-3s | Claude generation |
 | PDF ingestion | ~30s/page | With VLM captions |
+
+---
+
+## Scaling: pgvector vs FAISS
+
+The system supports **both** pgvector and FAISS for vector search. Choose based on library size:
+
+| Vector Count | Recommended Backend | Command |
+|--------------|---------------------|---------|
+| < 50K | pgvector HNSW (default) | No change needed |
+| 50K - 500K | Either | Benchmark both |
+| > 500K | FAISS IVFFlat | See below |
+
+### Switching to FAISS at Scale
+
+```bash
+# Enable FAISS when approaching 500K+ vectors
+export USE_FAISS=true
+export USE_PGVECTOR=false
+
+# Build FAISS indexes
+python scripts/build_indexes.py --faiss
+
+# Restart API
+```
+
+See [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md#vector-search-scaling-strategy) for detailed scaling guidance.
 
 ---
 

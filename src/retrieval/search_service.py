@@ -127,26 +127,38 @@ class SearchService:
     def __init__(
         self,
         database,
-        faiss_manager: FAISSManager,
-        embedder,
+        faiss_manager: FAISSManager = None,
+        embedder=None,
         reranker=None,
-        config: Dict = None
+        config: Dict = None,
+        use_pgvector: bool = True
     ):
         """
         Initialize search service.
-        
+
         Args:
             database: Database connection or repositories
-            faiss_manager: FAISS index manager
+            faiss_manager: FAISS index manager (optional, deprecated)
             embedder: Text embedding service
             reranker: Optional re-ranking model
             config: Search configuration
+            use_pgvector: Use pgvector HNSW indexes (default: True)
         """
         self.db = database
         self.faiss = faiss_manager
         self.embedder = embedder
         self.reranker = reranker
-        
+        self._use_pgvector = use_pgvector
+
+        # Initialize pgvector searcher when FAISS is not available
+        self._pgvector_searcher = None
+        if self._use_pgvector or not self.faiss:
+            self._pgvector_searcher = PostgresVectorSearcher(
+                database=database,
+                embedder=embedder,
+                config=config
+            )
+
         # Configuration
         self.config = config or {}
         self.faiss_k_multiplier = self.config.get('faiss_k_multiplier', 10)
@@ -252,10 +264,20 @@ class SearchService:
         top_k: int,
         filters: SearchFilters
     ) -> List[Tuple[str, float]]:
-        """Text search using FAISS."""
+        """Text search using FAISS or pgvector."""
+        # Use pgvector if FAISS is not available
+        if not self.faiss and self._pgvector_searcher:
+            results = await self._pgvector_searcher.search_chunks(
+                query_embedding=list(query_embedding),
+                top_k=top_k,
+                filters=filters
+            )
+            # Return as (id, score) tuples for compatibility
+            return [(r.chunk_id, r.semantic_score) for r in results]
+
         # Over-fetch to account for filtering
         fetch_k = top_k * self.faiss_k_multiplier if filters.has_filters else top_k * 2
-        
+
         results = self.faiss.search_text(query_embedding, k=fetch_k)
         return results
     
@@ -265,9 +287,20 @@ class SearchService:
         top_k: int,
         filters: SearchFilters
     ) -> List[Tuple[str, float]]:
-        """Image search using FAISS (via caption embeddings)."""
+        """Image search using FAISS (via caption embeddings) or pgvector."""
+        # Use pgvector if FAISS is not available
+        if not self.faiss and self._pgvector_searcher:
+            results = await self._pgvector_searcher.search_images(
+                query_embedding=list(query_embedding),
+                top_k=top_k,
+                use_caption_embedding=True,  # Text-to-image search
+                filters=filters
+            )
+            # Return as (id, score) tuples for compatibility
+            return [(r['id'], r['similarity_score']) for r in results]
+
         fetch_k = top_k * self.faiss_k_multiplier if filters.has_filters else top_k * 2
-        
+
         # Use caption embeddings for text-to-image search
         results = self.faiss.search_by_text_for_images(query_embedding, k=fetch_k)
         return results
@@ -279,8 +312,19 @@ class SearchService:
         filters: SearchFilters
     ) -> List[Tuple[str, float]]:
         """Hybrid search combining text and image."""
+        # Use pgvector if FAISS is not available
+        if not self.faiss and self._pgvector_searcher:
+            results = await self._pgvector_searcher.search_hybrid(
+                query_embedding=list(query_embedding),
+                top_k=top_k,
+                text_weight=self.text_weight,
+                filters=filters
+            )
+            # Return as (id, score) tuples for compatibility
+            return [(r.chunk_id, r.semantic_score) for r in results]
+
         fetch_k = top_k * self.faiss_k_multiplier if filters.has_filters else top_k * 3
-        
+
         results = self.faiss.search_hybrid(
             text_embedding=query_embedding,
             image_embedding=None,  # Use text embedding for both
@@ -727,12 +771,405 @@ class VoyageEmbedder:
 
 
 # =============================================================================
+# Embedding Dimension Constants
+# =============================================================================
+
+EMBEDDING_DIMENSIONS = {
+    "text": 1024,     # Voyage-3
+    "image": 512,     # BiomedCLIP
+    "caption": 1024,  # Voyage-3 (for image captions)
+}
+
+
+# =============================================================================
+# PostgresVectorSearcher - pgvector-native search (FAISS alternative)
+# =============================================================================
+
+class PostgresVectorSearcher:
+    """
+    Pure pgvector search implementation.
+
+    Uses PostgreSQL pgvector extension directly for vector similarity search,
+    eliminating need for separate FAISS indexes. Recommended for datasets
+    under 5M vectors with HNSW indexes.
+
+    Benefits over FAISS:
+    - Single source of truth (no index sync issues)
+    - Transactional consistency
+    - Native filtering in query
+    - Simplified deployment
+
+    Performance expectations with HNSW:
+    - 1K vectors: <10ms
+    - 10K vectors: <20ms
+    - 100K vectors: <50ms
+    - 1M vectors: <100ms
+    """
+
+    def __init__(self, database, embedder=None, config: Dict = None):
+        """
+        Initialize pgvector searcher.
+
+        Args:
+            database: Database connection with fetch/execute methods
+            embedder: Optional embedder for query embedding
+            config: Search configuration
+        """
+        self.db = database
+        self.embedder = embedder
+        self.config = config or {}
+        self.min_similarity = self.config.get('min_similarity', 0.3)
+
+    def _validate_embedding_dimension(
+        self,
+        embedding: List[float],
+        expected_type: str
+    ) -> None:
+        """
+        Validate embedding dimension matches expected type.
+
+        Raises ValueError if dimension mismatch detected.
+        """
+        expected_dim = EMBEDDING_DIMENSIONS.get(expected_type)
+        if expected_dim is None:
+            raise ValueError(f"Unknown embedding type: {expected_type}")
+
+        actual_dim = len(embedding)
+        if actual_dim != expected_dim:
+            raise ValueError(
+                f"{expected_type.capitalize()} search requires {expected_dim}d embedding, "
+                f"got {actual_dim}d. "
+                f"(text=1024d Voyage-3, image=512d BiomedCLIP)"
+            )
+
+    def _format_embedding_for_pgvector(self, embedding: List[float]) -> str:
+        """
+        Format embedding list as pgvector string.
+
+        asyncpg doesn't natively support pgvector type, so we convert
+        the Python list to the string format pgvector expects: '[val1,val2,...]'
+        """
+        return '[' + ','.join(str(v) for v in embedding) + ']'
+
+    async def search_chunks(
+        self,
+        query_embedding: List[float],
+        top_k: int = 10,
+        filters: SearchFilters = None,
+        min_similarity: float = None
+    ) -> List[SearchResult]:
+        """
+        Search text chunks using pgvector cosine similarity.
+
+        Args:
+            query_embedding: 1024d Voyage-3 embedding
+            top_k: Number of results
+            filters: Optional filters
+            min_similarity: Minimum similarity threshold
+
+        Returns:
+            List of SearchResult objects sorted by similarity
+        """
+        # Validate dimension
+        self._validate_embedding_dimension(query_embedding, "text")
+
+        filters = filters or SearchFilters()
+        min_sim = min_similarity or self.min_similarity
+
+        # Format embedding for pgvector (asyncpg doesn't natively support vector type)
+        embedding_str = self._format_embedding_for_pgvector(query_embedding)
+
+        # Build filter conditions
+        # Note: Using 'embedding' column (actual data), not 'text_embedding' (empty)
+        conditions = ["1 - (c.embedding <=> $1::vector) >= $2"]
+        params = [embedding_str, min_sim]
+        param_idx = 3
+
+        if filters.document_ids:
+            conditions.append(f"c.document_id = ANY(${param_idx})")
+            params.append([UUID(d) for d in filters.document_ids])
+            param_idx += 1
+
+        if filters.chunk_types:
+            conditions.append(f"c.chunk_type = ANY(${param_idx})")
+            params.append(filters.chunk_types)
+            param_idx += 1
+
+        if filters.cuis:
+            conditions.append(f"c.topic_tags && ${param_idx}")
+            params.append(filters.cuis)
+            param_idx += 1
+
+        if filters.page_range:
+            conditions.append(f"c.start_page >= ${param_idx}")
+            conditions.append(f"c.start_page <= ${param_idx + 1}")
+            params.extend(filters.page_range)
+            param_idx += 2
+
+        where_clause = " AND ".join(conditions)
+
+        # pgvector cosine distance: <=> returns distance, so similarity = 1 - distance
+        # Note: Using 'embedding' column (actual data), not 'text_embedding' (empty)
+        query = f"""
+            SELECT
+                c.id AS chunk_id,
+                c.document_id,
+                c.content,
+                c.start_page AS page_number,
+                c.chunk_type,
+                c.topic_tags AS cuis,
+                c.entity_mentions,
+                d.title AS document_title,
+                COALESCE(d.authority_score, 1.0) AS authority_score,
+                1 - (c.embedding <=> $1::vector) AS similarity_score
+            FROM chunks c
+            JOIN documents d ON c.document_id = d.id
+            WHERE {where_clause}
+                AND c.embedding IS NOT NULL
+            ORDER BY c.embedding <=> $1::vector
+            LIMIT ${param_idx}
+        """
+        params.append(top_k)
+
+        rows = await self.db.fetch(query, *params)
+
+        results = []
+        for row in rows:
+            entity_mentions = row.get('entity_mentions', {}) or {}
+            entity_names = []
+            if isinstance(entity_mentions, dict):
+                entity_names = list(entity_mentions.keys())
+            elif isinstance(entity_mentions, list):
+                entity_names = [str(e) for e in entity_mentions]
+
+            chunk_type = ChunkType.GENERAL
+            if row.get('chunk_type'):
+                try:
+                    chunk_type = ChunkType[row['chunk_type'].upper()]
+                except (KeyError, ValueError):
+                    pass
+
+            results.append(SearchResult(
+                chunk_id=str(row['chunk_id']),
+                document_id=str(row['document_id']),
+                content=row['content'],
+                title='',
+                chunk_type=chunk_type,
+                page_start=row.get('page_number', 0),
+                entity_names=entity_names,
+                image_ids=[],
+                cuis=row.get('cuis', []) or [],
+                authority_score=float(row['authority_score']),
+                keyword_score=0.0,
+                semantic_score=float(row['similarity_score']),
+                final_score=float(row['similarity_score']),
+                document_title=row.get('document_title'),
+                images=[],
+            ))
+
+        return results
+
+    async def search_images(
+        self,
+        query_embedding: List[float],
+        top_k: int = 10,
+        use_caption_embedding: bool = True,
+        filters: SearchFilters = None,
+        min_similarity: float = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search images using pgvector.
+
+        Args:
+            query_embedding: Embedding vector (1024d for text query, 512d for image query)
+            top_k: Number of results
+            use_caption_embedding: If True, search caption embeddings (text-to-image).
+                                   If False, search image embeddings (image-to-image).
+            filters: Optional filters
+            min_similarity: Minimum similarity threshold
+
+        Returns:
+            List of image result dicts
+        """
+        # Validate dimension based on search type
+        # Note: Using 'clip_embedding' (actual data), not 'image_embedding' (empty)
+        if use_caption_embedding:
+            self._validate_embedding_dimension(query_embedding, "caption")
+            embedding_col = "caption_embedding"
+        else:
+            self._validate_embedding_dimension(query_embedding, "image")
+            embedding_col = "clip_embedding"  # BiomedCLIP embeddings
+
+        filters = filters or SearchFilters()
+        min_sim = min_similarity or self.min_similarity
+
+        # Format embedding for pgvector (asyncpg doesn't natively support vector type)
+        embedding_str = self._format_embedding_for_pgvector(query_embedding)
+
+        conditions = [
+            f"1 - (i.{embedding_col} <=> $1::vector) >= $2",
+            "NOT i.is_decorative"
+        ]
+        params = [embedding_str, min_sim]
+        param_idx = 3
+
+        if filters.document_ids:
+            conditions.append(f"i.document_id = ANY(${param_idx})")
+            params.append([UUID(d) for d in filters.document_ids])
+            param_idx += 1
+
+        if filters.image_types:
+            conditions.append(f"i.image_type = ANY(${param_idx})")
+            params.append(filters.image_types)
+            param_idx += 1
+
+        if filters.page_range:
+            conditions.append(f"i.page_number >= ${param_idx}")
+            conditions.append(f"i.page_number <= ${param_idx + 1}")
+            params.extend(filters.page_range)
+            param_idx += 2
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                i.id,
+                i.document_id,
+                i.storage_path AS file_path,
+                i.caption,
+                i.image_type,
+                i.width,
+                i.height,
+                i.format,
+                1 - (i.{embedding_col} <=> $1::vector) AS similarity_score
+            FROM images i
+            WHERE {where_clause}
+                AND i.{embedding_col} IS NOT NULL
+            ORDER BY i.{embedding_col} <=> $1::vector
+            LIMIT ${param_idx}
+        """
+        params.append(top_k)
+
+        rows = await self.db.fetch(query, *params)
+
+        results = []
+        for row in rows:
+            results.append({
+                'id': str(row['id']),
+                'document_id': str(row['document_id']),
+                'file_path': row['file_path'],
+                'caption': row.get('caption', ''),
+                'image_type': row.get('image_type'),
+                'width': row.get('width'),
+                'height': row.get('height'),
+                'format': row.get('format'),
+                'similarity_score': float(row['similarity_score']),
+            })
+
+        return results
+
+    async def search_hybrid(
+        self,
+        query_embedding: List[float],
+        top_k: int = 10,
+        text_weight: float = 0.7,
+        filters: SearchFilters = None
+    ) -> List[SearchResult]:
+        """
+        Hybrid search combining text chunks with linked images.
+
+        Args:
+            query_embedding: 1024d Voyage-3 embedding
+            top_k: Number of results
+            text_weight: Weight for text results (images get 1 - text_weight)
+            filters: Optional filters
+
+        Returns:
+            List of SearchResult with attached images
+        """
+        # Search chunks first
+        chunk_results = await self.search_chunks(
+            query_embedding,
+            top_k=top_k * 2,  # Over-fetch for filtering
+            filters=filters
+        )
+
+        if not chunk_results:
+            return []
+
+        # Attach linked images
+        chunk_ids = [UUID(r.chunk_id) for r in chunk_results]
+
+        link_query = """
+            SELECT
+                l.chunk_id,
+                l.relevance_score,
+                i.id,
+                i.document_id,
+                i.storage_path AS file_path,
+                i.caption,
+                i.image_type,
+                i.width,
+                i.height,
+                i.format
+            FROM chunk_image_links l
+            JOIN images i ON l.image_id = i.id
+            WHERE l.chunk_id = ANY($1)
+                AND l.relevance_score >= 0.5
+                AND NOT i.is_decorative
+            ORDER BY l.chunk_id, l.relevance_score DESC
+        """
+
+        link_rows = await self.db.fetch(link_query, chunk_ids)
+
+        # Group images by chunk
+        images_by_chunk = {}
+        for row in link_rows:
+            chunk_id = str(row['chunk_id'])
+            if chunk_id not in images_by_chunk:
+                images_by_chunk[chunk_id] = []
+
+            file_path_str = row['file_path'] or ''
+            if file_path_str.startswith('output/images/'):
+                file_path_str = file_path_str[len('output/images/'):]
+
+            if len(images_by_chunk[chunk_id]) < 3:  # Max 3 images per chunk
+                images_by_chunk[chunk_id].append(ExtractedImage(
+                    id=str(row['id']),
+                    document_id=str(row['document_id']),
+                    file_path=Path(file_path_str),
+                    page_number=0,
+                    width=row.get('width') or 0,
+                    height=row.get('height') or 0,
+                    format=row.get('format') or 'JPEG',
+                    content_hash='',
+                    caption=row.get('caption') or '',
+                    vlm_caption=row.get('caption') or '',
+                    image_type=row.get('image_type') or 'unknown',
+                    quality_score=float(row.get('relevance_score', 0.0))
+                ))
+
+        # Attach images to results
+        for result in chunk_results:
+            if result.chunk_id in images_by_chunk:
+                result.images = images_by_chunk[result.chunk_id]
+
+        return chunk_results[:top_k]
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
 if __name__ == "__main__":
     print("SearchService - requires database and FAISS indexes")
+    print("PostgresVectorSearcher - requires database with pgvector")
     print()
     print("Usage:")
+    print("  # FAISS-based (existing):")
     print("  service = SearchService(db, faiss_manager, embedder)")
     print("  results = await service.search('acoustic neuroma', top_k=10)")
+    print()
+    print("  # pgvector-based (new, recommended):")
+    print("  searcher = PostgresVectorSearcher(db, embedder)")
+    print("  results = await searcher.search_chunks(query_embedding, top_k=10)")

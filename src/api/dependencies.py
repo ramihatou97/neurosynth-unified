@@ -219,7 +219,7 @@ def validate_environment(
 
 class Settings:
     """Application settings from environment."""
-    
+
     # Database (asyncpg requires plain postgresql:// scheme)
     database_url: str = os.getenv(
         "DATABASE_URL",
@@ -227,10 +227,34 @@ class Settings:
     )
     db_min_connections: int = int(os.getenv("DB_MIN_CONNECTIONS", "2"))
     db_max_connections: int = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
-    
-    # FAISS
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Vector Search Backend Feature Flags
+    # ─────────────────────────────────────────────────────────────────────────
+    # The system supports BOTH pgvector (PostgreSQL) and FAISS backends.
+    # Choose based on your library size:
+    #
+    # SCALING THRESHOLDS:
+    #   < 50K vectors   → pgvector HNSW (current default)
+    #   50K - 500K      → Either works, benchmark both
+    #   > 500K vectors  → FAISS IVFFlat recommended
+    #
+    # TO ENABLE FAISS AT PRODUCTION SCALE:
+    #   export USE_FAISS=true
+    #   export USE_PGVECTOR=false
+    #   python scripts/build_indexes.py --faiss
+    #
+    # Current sample: ~1.3K vectors → pgvector optimal
+    # Expected full scale: ~1M vectors → switch to FAISS at ~500K
+    # ─────────────────────────────────────────────────────────────────────────
+    use_faiss: bool = os.getenv("USE_FAISS", "false").lower() == "true"
+    use_pgvector: bool = os.getenv("USE_PGVECTOR", "true").lower() == "true"
+    enable_embedding_cache: bool = os.getenv("ENABLE_EMBEDDING_CACHE", "true").lower() == "true"
+    enable_conflict_detection: bool = os.getenv("ENABLE_CONFLICT_DETECTION", "true").lower() == "true"
+
+    # FAISS (disabled by default, retained for rollback)
     faiss_index_dir: str = os.getenv("FAISS_INDEX_DIR", "./indexes")
-    
+
     # Embeddings
     voyage_api_key: str = os.getenv("VOYAGE_API_KEY", "")
     voyage_model: str = os.getenv("VOYAGE_MODEL", "voyage-3")
@@ -347,18 +371,22 @@ class ServiceContainer:
                 self._repositories = get_repositories(self._database)
                 logger.info("✓ Database connected")
 
-                # 2. FAISS indexes (optional)
-                try:
-                    from src.retrieval import FAISSManager
+                # 2. FAISS indexes (optional, disabled by default - using pgvector HNSW)
+                if settings.use_faiss:
+                    try:
+                        from src.retrieval import FAISSManager
 
-                    self._faiss = FAISSManager(settings.faiss_index_dir)
-                    stats = self._faiss.load()
-                    logger.info(f"✓ FAISS indexes loaded: {stats}")
-                except FileNotFoundError:
-                    logger.warning("FAISS indexes not found - search will use pgvector only")
-                    self._faiss = None
-                except Exception as e:
-                    logger.error(f"FAISS initialization failed: {e}")
+                        self._faiss = FAISSManager(settings.faiss_index_dir)
+                        stats = self._faiss.load()
+                        logger.info(f"✓ FAISS indexes loaded: {stats}")
+                    except FileNotFoundError:
+                        logger.warning("FAISS indexes not found - search will use pgvector only")
+                        self._faiss = None
+                    except Exception as e:
+                        logger.error(f"FAISS initialization failed: {e}")
+                        self._faiss = None
+                else:
+                    logger.info("⊘ FAISS disabled (USE_FAISS=false) - using pgvector HNSW indexes")
                     self._faiss = None
 
                 # 3. Embedder (optional but needed for search)
@@ -386,9 +414,11 @@ class ServiceContainer:
                         self._search = SearchService(
                             database=self._database,
                             faiss_manager=self._faiss,
-                            embedder=self._embedder
+                            embedder=self._embedder,
+                            use_pgvector=settings.use_pgvector
                         )
-                        logger.info("✓ Search service initialized")
+                        search_mode = "pgvector HNSW" if settings.use_pgvector else "FAISS"
+                        logger.info(f"✓ Search service initialized ({search_mode})")
                     else:
                         logger.warning("⚠ Search service not initialized - embedder required")
                         self._search = None

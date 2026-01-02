@@ -15,11 +15,24 @@ from .engine import (
     ContextAdapter,
     FigureResolver,
     AuthoritySource,
+    AuthorityConfig,
+    AuthorityRegistry,
+    get_authority_registry,
+    set_authority_registry,
+    DEFAULT_AUTHORITY_SCORES,
     TEMPLATE_SECTIONS,
     TEMPLATE_REQUIREMENTS,
 )
 
+from .conflicts import (
+    ConflictHandler,
+    ConflictReport,
+    Conflict,
+    ConflictType,
+)
+
 __all__ = [
+    # Synthesis Engine
     "SynthesisEngine",
     "TemplateType",
     "SynthesisResult",
@@ -28,7 +41,19 @@ __all__ = [
     "RateLimiter",
     "ContextAdapter",
     "FigureResolver",
+    # Authority System
     "AuthoritySource",
+    "AuthorityConfig",
+    "AuthorityRegistry",
+    "get_authority_registry",
+    "set_authority_registry",
+    "DEFAULT_AUTHORITY_SCORES",
+    # Conflict Detection
+    "ConflictHandler",
+    "ConflictReport",
+    "Conflict",
+    "ConflictType",
+    # Template Constants
     "TEMPLATE_SECTIONS",
     "TEMPLATE_REQUIREMENTS",
 ]

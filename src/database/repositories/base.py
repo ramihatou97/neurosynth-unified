@@ -26,6 +26,21 @@ ALLOWED_ORDER_COLUMNS: Set[str] = {
     'ingested_at', 'occurrence_count', 'file_name'
 }
 
+# Whitelist of allowed filter columns for SQL injection prevention
+ALLOWED_FILTER_COLUMNS: Set[str] = {
+    'document_id', 'chunk_type', 'specialty', 'image_type',
+    'page_number', 'is_decorative', 'link_type', 'status',
+    'chunk_id', 'image_id'
+}
+
+# Whitelist of allowed update columns for SQL injection prevention
+ALLOWED_UPDATE_COLUMNS: Set[str] = {
+    'title', 'content', 'status', 'score', 'embedding',
+    'metadata', 'caption', 'vlm_caption', 'is_decorative',
+    'authority_score', 'chunk_type', 'image_type', 'processed',
+    'specialty_relevance', 'topic_tags', 'entity_mentions'
+}
+
 
 class BaseRepository(ABC, Generic[T]):
     """
@@ -188,13 +203,24 @@ class BaseRepository(ABC, Generic[T]):
         """Update an entity."""
         if not updates:
             return await self.get_by_id(id)
-        
-        # Build SET clause
+
+        # Build SET clause with column validation
         set_parts = []
         values = []
-        for i, (key, value) in enumerate(updates.items(), start=1):
-            set_parts.append(f"{key} = ${i}")
+        param_idx = 1
+        for key, value in updates.items():
+            # Validate update column to prevent SQL injection
+            if key.lower() not in ALLOWED_UPDATE_COLUMNS:
+                logger.warning(f"Invalid update column: '{key}'. Skipping.")
+                continue
+            set_parts.append(f"{key} = ${param_idx}")
             values.append(value)
+            param_idx += 1
+
+        # If all columns were invalid, return unchanged entity
+        if not set_parts:
+            logger.warning("No valid update columns provided.")
+            return await self.get_by_id(id)
         
         values.append(id)
         
@@ -316,6 +342,10 @@ class VectorSearchMixin:
         
         if filters:
             for key, value in filters.items():
+                # Validate filter column to prevent SQL injection
+                if key.lower() not in ALLOWED_FILTER_COLUMNS:
+                    logger.warning(f"Invalid filter column: '{key}'. Skipping.")
+                    continue
                 if isinstance(value, list):
                     where_parts.append(f"{key} = ANY(${param_idx})")
                 else:

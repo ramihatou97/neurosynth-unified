@@ -277,7 +277,9 @@ class SearchCache:
     async def get_or_compute_embedding(
         self,
         text: str,
-        embed_func: Callable
+        embed_func: Callable,
+        model: str = "default",
+        dimension: int = 1024
     ) -> Any:
         """
         Get embedding from cache or compute if missing.
@@ -285,24 +287,54 @@ class SearchCache:
         Args:
             text: Query text
             embed_func: Async function to compute embedding
+            model: Embedding model name (for cache key uniqueness)
+            dimension: Expected embedding dimension (for cache key uniqueness)
 
         Returns:
             Embedding vector (numpy array)
+
+        Note:
+            Cache key includes model and dimension to prevent returning
+            wrong embeddings when the same content is embedded with
+            different models. Example:
+            - Voyage-3 (1024d) for text chunks
+            - BiomedCLIP (512d) for images
         """
-        cache_key = self._hash_text(text)
+        cache_key = self._make_embedding_key(text, model, dimension)
 
         # Check cache
         cached = self.embedding_cache.get(cache_key)
         if cached is not None:
-            logger.debug(f"Embedding cache HIT: {cache_key[:16]}")
+            logger.debug(f"Embedding cache HIT: {model}:{dimension}:{cache_key[:8]}")
             return cached
 
         # Compute and cache
-        logger.debug(f"Embedding cache MISS: {cache_key[:16]}")
+        logger.debug(f"Embedding cache MISS: {model}:{dimension}:{cache_key[:8]}")
         embedding = await embed_func(text)
+
+        # Validate dimension matches expectation
+        if hasattr(embedding, '__len__') and len(embedding) != dimension:
+            logger.warning(
+                f"Embedding dimension mismatch: expected {dimension}, got {len(embedding)}"
+            )
+
         self.embedding_cache.put(cache_key, embedding)
 
         return embedding
+
+    def _make_embedding_key(
+        self,
+        text: str,
+        model: str = "default",
+        dimension: int = 1024
+    ) -> str:
+        """
+        Create cache key for embedding with model and dimension.
+
+        Format: text:{model}:{dimension}:{content_hash}
+        """
+        content_hash = self._hash_text(text)[:16]  # Short hash for key
+        return f"text:{model}:{dimension}:{content_hash}"
 
     # =========================================================================
     # Search Result Cache
@@ -429,13 +461,27 @@ class SearchCache:
 # Decorator for Caching
 # =============================================================================
 
-def cached_embedding(cache: SearchCache):
-    """Decorator to cache embedding function results."""
+def cached_embedding(cache: SearchCache, model: str = "default", dimension: int = 1024):
+    """
+    Decorator to cache embedding function results.
+
+    Args:
+        cache: SearchCache instance
+        model: Embedding model name (e.g., "voyage-3", "biomedclip")
+        dimension: Expected embedding dimension (e.g., 1024, 512)
+
+    Usage:
+        @cached_embedding(cache, model="voyage-3", dimension=1024)
+        async def embed_text(self, text: str) -> List[float]:
+            ...
+    """
     def decorator(func):
         async def wrapper(self, text: str, *args, **kwargs):
             return await cache.get_or_compute_embedding(
                 text,
-                lambda: func(self, text, *args, **kwargs)
+                lambda: func(self, text, *args, **kwargs),
+                model=model,
+                dimension=dimension
             )
         return wrapper
     return decorator
