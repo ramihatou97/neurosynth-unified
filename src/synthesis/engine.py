@@ -23,6 +23,18 @@ if TYPE_CHECKING:
 
 from src.synthesis.conflicts import ConflictHandler, ConflictReport
 
+# Import enhanced adapters for synthesis alignment fixes
+try:
+    from scripts.synthesis_fixes.enhanced_context_adapter import (
+        EnhancedContextAdapter,
+        EnhancedFigureResolver,
+        ContentValidator,
+        CHUNK_TYPE_SECTION_MAP,
+    )
+    ENHANCED_ADAPTERS_AVAILABLE = True
+except ImportError:
+    ENHANCED_ADAPTERS_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -746,6 +758,8 @@ class SynthesisEngine:
         model: str = "claude-sonnet-4-20250514",
         calls_per_minute: int = 50,
         deep_conflict_check: bool = False,
+        use_enhanced_adapters: bool = True,
+        umls_extractor=None,  # For ContentValidator hallucination detection
     ):
         self.client = anthropic_client
         self.model = model
@@ -754,8 +768,29 @@ class SynthesisEngine:
         self.has_verification = verification_client is not None
         self.deep_conflict_check = deep_conflict_check
 
-        self.adapter = ContextAdapter()
-        self.figure_resolver = FigureResolver()
+        # Use enhanced adapters if available and requested
+        # Enhanced adapters provide:
+        #   - Type-based section routing (chunk_type -> section mapping)
+        #   - Caption embedding passthrough for semantic figure matching
+        #   - CUI preservation for hallucination detection
+        #   - Improved combined scoring with quality weighting
+        if use_enhanced_adapters and ENHANCED_ADAPTERS_AVAILABLE:
+            logger.info("Using enhanced synthesis adapters (alignment fixes enabled)")
+            self.adapter = EnhancedContextAdapter(min_quality_score=0.3)
+            self.figure_resolver = EnhancedFigureResolver(min_match_score=0.3, prefer_semantic=True)
+            self.content_validator = ContentValidator(
+                umls_extractor=umls_extractor,
+                log_hallucinations=True
+            ) if umls_extractor else None
+            self.using_enhanced = True
+        else:
+            if use_enhanced_adapters and not ENHANCED_ADAPTERS_AVAILABLE:
+                logger.warning("Enhanced adapters requested but not available, using standard adapters")
+            self.adapter = ContextAdapter()
+            self.figure_resolver = FigureResolver()
+            self.content_validator = None
+            self.using_enhanced = False
+
         self.conflict_handler = ConflictHandler(anthropic_client if deep_conflict_check else None)
 
     async def _call_claude(self, prompt: str, max_tokens: int = 4000) -> str:
@@ -842,6 +877,28 @@ class SynthesisEngine:
         )
         if conflict_report.count > 0:
             logger.info(f"Detected {conflict_report.count} conflicts")
+
+        # Stage 5.5: Content Validation (CUI-based hallucination detection)
+        # Only available when using enhanced adapters with ContentValidator
+        validation_report = None
+        if self.using_enhanced and self.content_validator:
+            source_cuis = context.get("all_cuis", [])
+            if source_cuis:
+                logger.info(f"Running content validation against {len(source_cuis)} source CUIs")
+                # Combine all section content for validation
+                all_content = "\n\n".join(s.content for s in sections)
+                validation_report = self.content_validator.validate_against_sources(
+                    generated_text=all_content,
+                    source_cuis=source_cuis,
+                    threshold=0.7
+                )
+                if validation_report.get("hallucination_risk"):
+                    logger.warning(
+                        f"Potential hallucinations detected: "
+                        f"{validation_report.get('unsupported_cuis', 0)} unsupported CUIs"
+                    )
+                    for issue in validation_report.get("issues", [])[:3]:
+                        logger.warning(f"  - {issue.get('message', '')}")
 
         # Build result
         result = SynthesisResult(

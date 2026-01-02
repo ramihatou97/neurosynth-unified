@@ -42,14 +42,14 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             'content': row['content'],
             'content_hash': row.get('content_hash'),
             'summary': row.get('summary'),  # Pre-computed human-readable summary
-            'page_number': row.get('start_page'),
+            'page_number': row.get('page_number'),
             'chunk_index': row.get('sequence_in_doc'),
             'start_char': row.get('char_offset_start'),
             'end_char': row.get('char_offset_end'),
             'chunk_type': row.get('chunk_type'),
-            'specialty': row.get('specialty_relevance', {}),
+            'specialty': row.get('specialty', {}),
             'embedding': row.get('embedding'),
-            'cuis': [],  # Not in current schema
+            'cuis': row.get('cuis', []),
             'entities': row.get('entity_mentions', []),
             'created_at': row.get('created_at'),
             'metadata': {},
@@ -76,7 +76,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         if isinstance(entities, list):
             entities = json.dumps(entities)
 
-        # DB column is specialty_relevance
+        # DB column is specialty (v4.0 schema)
         specialty = entity.get('specialty') or entity.get('specialty_relevance', {})
         if isinstance(specialty, dict):
             specialty = json.dumps(specialty)
@@ -86,12 +86,12 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             'document_id': entity['document_id'],
             'content': entity['content'],
             'content_hash': entity.get('content_hash'),
-            'start_page': entity.get('page_number') or entity.get('start_page'),
+            'page_number': entity.get('page_number') or entity.get('start_page'),
             'sequence_in_doc': entity.get('chunk_index') or entity.get('sequence_in_doc'),
             'char_offset_start': entity.get('start_char') or entity.get('char_offset_start'),
             'char_offset_end': entity.get('end_char') or entity.get('char_offset_end'),
             'chunk_type': entity.get('chunk_type'),
-            'specialty_relevance': specialty,
+            'specialty': specialty,
             'embedding': embedding,
             'entity_mentions': entities,
             'cuis': entity.get('cuis', [])
@@ -176,8 +176,8 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             await conn.executemany("""
                 INSERT INTO chunks (
                     id, document_id, content,
-                    start_page, sequence_in_doc, char_offset_start, char_offset_end,
-                    chunk_type, specialty_relevance, embedding, entity_mentions, summary, cuis,
+                    page_number, sequence_in_doc, char_offset_start, char_offset_end,
+                    chunk_type, specialty, embedding, entity_mentions, summary, cuis,
                     readability_score, coherence_score, completeness_score
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11::jsonb, $12, $13,
@@ -210,8 +210,8 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             offset: Skip results (for pagination)
         """
         columns = """
-            id, document_id, content, start_page, sequence_in_doc,
-            chunk_type, specialty_relevance, entity_mentions, summary
+            id, document_id, content, page_number, sequence_in_doc,
+            chunk_type, specialty, entity_mentions, summary, cuis
         """
         if include_embedding:
             columns += ", embedding"
@@ -231,7 +231,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             query = f"""
                 SELECT {columns}
                 FROM chunks
-                WHERE document_id = $1 AND start_page = $2
+                WHERE document_id = $1 AND page_number = $2
                 ORDER BY sequence_in_doc
                 {pagination}
             """
@@ -240,7 +240,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT {columns}
                 FROM chunks
                 WHERE document_id = $1
-                ORDER BY start_page, sequence_in_doc
+                ORDER BY page_number, sequence_in_doc
                 {pagination}
             """
 
@@ -259,7 +259,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
 
         if page_number is not None:
             params.append(page_number)
-            where_parts.append(f"start_page = ${len(params)}")
+            where_parts.append(f"page_number = ${len(params)}")
 
         if chunk_type:
             params.append(chunk_type)
@@ -280,16 +280,16 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
         """Get chunks by type (PROCEDURE, ANATOMY, etc.)."""
         if document_id:
             query = """
-                SELECT id, document_id, content, start_page, chunk_type, specialty_relevance
+                SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
                 FROM chunks
                 WHERE chunk_type = $1 AND document_id = $2
-                ORDER BY start_page, sequence_in_doc
+                ORDER BY page_number, sequence_in_doc
                 LIMIT $3
             """
             rows = await self.db.fetch(query, chunk_type, document_id, limit)
         else:
             query = """
-                SELECT id, document_id, content, start_page, chunk_type, specialty_relevance
+                SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
                 FROM chunks
                 WHERE chunk_type = $1
                 ORDER BY created_at DESC
@@ -301,19 +301,19 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
     
     async def get_by_specialty(
         self,
-        specialty: str,
+        specialty_name: str,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
         """Get chunks by neurosurgery specialty."""
-        # specialty_relevance is JSONB, query checks if specialty key exists
+        # specialty is JSONB, query checks if specialty key exists
         query = """
-            SELECT id, document_id, content, start_page, chunk_type, specialty_relevance
+            SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
             FROM chunks
-            WHERE specialty_relevance ? $1
+            WHERE specialty ? $1
             ORDER BY created_at DESC
             LIMIT $2
         """
-        rows = await self.db.fetch(query, specialty, limit)
+        rows = await self.db.fetch(query, specialty_name, limit)
         return [self._to_entity(dict(row)) for row in rows]
     
     async def get_by_cui(
@@ -431,9 +431,9 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE embedding IS NOT NULL) as with_embedding,
-                    0 as with_cuis,
+                    COUNT(*) FILTER (WHERE cuis IS NOT NULL AND array_length(cuis, 1) > 0) as with_cuis,
                     COUNT(DISTINCT chunk_type) as unique_types,
-                    COUNT(DISTINCT specialty_relevance) as unique_specialties
+                    COUNT(DISTINCT specialty) as unique_specialties
                 FROM chunks
                 WHERE document_id = $1
             """
@@ -443,13 +443,13 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT
                     COUNT(*) as total,
                     COUNT(*) FILTER (WHERE embedding IS NOT NULL) as with_embedding,
-                    0 as with_cuis,
+                    COUNT(*) FILTER (WHERE cuis IS NOT NULL AND array_length(cuis, 1) > 0) as with_cuis,
                     COUNT(DISTINCT chunk_type) as unique_types,
-                    COUNT(DISTINCT specialty_relevance) as unique_specialties
+                    COUNT(DISTINCT specialty) as unique_specialties
                 FROM chunks
             """
             row = await self.db.fetchrow(query)
-        
+
         return dict(row) if row else {}
     
     async def get_type_distribution(

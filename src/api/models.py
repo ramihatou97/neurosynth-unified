@@ -35,6 +35,28 @@ class QuestionType(str, Enum):
 
 
 # =============================================================================
+# Quality and Validation Models (Enhanced Pipeline)
+# =============================================================================
+
+class QualityBreakdown(BaseModel):
+    """Detailed breakdown of content quality scores."""
+    readability: Optional[float] = Field(None, ge=0, le=1, description="Readability score (0-1)")
+    coherence: Optional[float] = Field(None, ge=0, le=1, description="Semantic coherence score (0-1)")
+    completeness: Optional[float] = Field(None, ge=0, le=1, description="Information completeness score (0-1)")
+    composite: float = Field(..., ge=0, le=1, description="Weighted composite quality score")
+
+
+class ValidationResult(BaseModel):
+    """Results from hallucination and content validation check."""
+    validated: bool = Field(..., description="Whether validation was performed")
+    hallucination_risk: bool = Field(False, description="Whether high hallucination risk was detected")
+    generated_cuis: int = Field(0, ge=0, description="Count of medical entities in generated text")
+    source_cuis: int = Field(0, ge=0, description="Count of medical entities in source text")
+    unsupported_cuis: List[str] = Field(default_factory=list, description="Entities in output not found in source")
+    issues: List[Dict[str, Any]] = Field(default_factory=list, description="Specific validation issues found")
+
+
+# =============================================================================
 # Search Models
 # =============================================================================
 
@@ -107,8 +129,11 @@ class SearchResultItem(BaseModel):
     # Medical terminology
     cuis: List[str] = Field(default_factory=list)
 
+    # Quality breakdown (Enhanced Pipeline)
+    quality: Optional[QualityBreakdown] = Field(None, description="Quality assessment breakdown")
+
     # Linked content (for API response)
-    images: List[Dict[str, Any]] = Field(default_factory=list)  # Serialized ExtractedImage objects
+    images: List[Dict[str, Any]] = Field(default_factory=list)  # Serialized ExtractedImage objects with has_caption_embedding
 
     # Backward compatibility aliases
     @property

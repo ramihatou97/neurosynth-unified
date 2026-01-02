@@ -16,7 +16,8 @@ from src.api.models import (
     SearchResponse,
     SearchResultItem,
     SearchFilters as SearchFiltersModel,
-    ErrorResponse
+    ErrorResponse,
+    QualityBreakdown,
 )
 from src.api.dependencies import get_search_service
 
@@ -45,8 +46,19 @@ def convert_to_result_item(result) -> SearchResultItem:
                 'caption': img.vlm_caption or img.caption or '',
                 'caption_summary': getattr(img, 'caption_summary', None),  # Brief summary
                 'image_type': img.image_type,
-                'page_number': img.page_number
+                'page_number': img.page_number,
+                'has_caption_embedding': getattr(img, 'caption_embedding', None) is not None,
             })
+
+    # Build quality breakdown if quality scores are available
+    quality_breakdown = None
+    if hasattr(result, 'readability_score') or hasattr(result, 'quality_score'):
+        quality_breakdown = QualityBreakdown(
+            readability=getattr(result, 'readability_score', None),
+            coherence=getattr(result, 'coherence_score', None),
+            completeness=getattr(result, 'completeness_score', None),
+            composite=getattr(result, 'quality_score', 0.7),
+        )
 
     return SearchResultItem(
         chunk_id=result.chunk_id,
@@ -64,7 +76,8 @@ def convert_to_result_item(result) -> SearchResultItem:
         final_score=result.final_score,
         document_title=result.document_title,
         cuis=result.cuis,
-        images=images_data
+        quality=quality_breakdown,
+        images=images_data,
     )
 
 

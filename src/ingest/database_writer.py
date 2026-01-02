@@ -231,6 +231,9 @@ class PipelineDatabaseWriter:
                 # Step 5: Update document stats (within transaction)
                 await self._update_document_stats_tx(conn, doc_id)
 
+                # Step 6: Refresh materialized views (for search performance)
+                await self._refresh_materialized_views_tx(conn)
+
                 logger.info(f"Transaction committed: document {doc_id} written successfully")
 
             except Exception as e:
@@ -238,7 +241,7 @@ class PipelineDatabaseWriter:
                 logger.error(f"Transaction rolled back due to error: {e}")
                 raise
 
-        # Step 6: Optional file export (outside transaction - non-critical)
+        # Step 7: Optional file export (outside transaction - non-critical)
         if self.export_files and self.export_dir:
             try:
                 await self._export_files(doc_id, result)
@@ -616,7 +619,7 @@ class PipelineDatabaseWriter:
             SELECT
                 (SELECT COUNT(*) FROM chunks WHERE document_id = $1) as chunk_count,
                 (SELECT COUNT(*) FROM images WHERE document_id = $1) as image_count,
-                (SELECT COUNT(*) FROM chunk_image_links WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = $1)) as link_count
+                (SELECT COUNT(*) FROM links WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = $1)) as link_count
             """,
             doc_id
         )
@@ -632,6 +635,45 @@ class PipelineDatabaseWriter:
         )
 
         logger.debug(f"Updated document stats: {stats['chunk_count']} chunks, {stats['image_count']} images, {stats['link_count']} links")
+
+    async def _refresh_materialized_views_tx(self, conn) -> None:
+        """
+        Refresh materialized views used for search performance.
+
+        Called after document ingestion to update pre-computed views like
+        top_chunk_links. Uses CONCURRENTLY where possible to avoid locking.
+        """
+        try:
+            # Check if top_chunk_links view exists
+            view_exists = await conn.fetchval(
+                """
+                SELECT EXISTS (
+                    SELECT FROM pg_matviews
+                    WHERE matviewname = 'top_chunk_links'
+                )
+                """
+            )
+
+            if view_exists:
+                # Use CONCURRENTLY to avoid blocking reads
+                # Note: CONCURRENTLY requires UNIQUE index on the view
+                try:
+                    await conn.execute(
+                        "REFRESH MATERIALIZED VIEW CONCURRENTLY top_chunk_links"
+                    )
+                    logger.debug("Refreshed top_chunk_links materialized view (CONCURRENTLY)")
+                except Exception:
+                    # Fall back to non-concurrent refresh if CONCURRENTLY fails
+                    await conn.execute(
+                        "REFRESH MATERIALIZED VIEW top_chunk_links"
+                    )
+                    logger.debug("Refreshed top_chunk_links materialized view")
+            else:
+                logger.debug("Materialized view top_chunk_links does not exist, skipping refresh")
+
+        except Exception as e:
+            # Log but don't fail - view refresh is an optimization, not critical
+            logger.warning(f"Failed to refresh materialized views: {e}")
 
     # =========================================================================
     # Legacy Internal Methods (for backward compatibility)
