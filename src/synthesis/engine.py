@@ -16,7 +16,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from time import time
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.shared.models import SearchResult, ExtractedImage
@@ -170,9 +170,11 @@ class AuthorityRegistry:
             source = source.value
         return self._scores.get(source, DEFAULT_AUTHORITY_SCORES[AuthoritySource.GENERAL])
 
-    def set_score(self, source: AuthoritySource, score: float) -> None:
+    def set_score(self, source: Union[AuthoritySource, str], score: float) -> None:
         """Override score for an existing authority source."""
-        self._scores[source.value] = max(0.0, min(1.0, score))
+        if isinstance(source, AuthoritySource):
+            source = source.value
+        self._scores[source] = max(0.0, min(1.0, score))
 
     def add_custom(self, name: str, score: float, keywords: List[str], tier: int = 3) -> None:
         """Add a custom authority source."""

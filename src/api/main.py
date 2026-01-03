@@ -43,6 +43,7 @@ from src.api.routes import (
 )
 from src.api.routes.images import router as images_router
 from src.api.routes.knowledge_graph import router as knowledge_graph_router
+from src.api.routes.registry import router as registry_router, load_registry_from_db
 from src.chat.routes import router as chat_router
 
 # Configure logging
@@ -85,6 +86,13 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Chat stores initialized")
     except Exception as e:
         logger.warning(f"Chat store initialization failed (using in-memory fallback): {e}")
+
+    # Load authority registry from database (if table exists)
+    try:
+        await load_registry_from_db(container.database)
+        logger.info("✓ Authority registry loaded")
+    except Exception as e:
+        logger.warning(f"Authority registry not loaded: {e}. Using defaults.")
 
     yield
     
@@ -154,6 +162,7 @@ Currently open access. Production deployments should add authentication.
     app.include_router(synthesis_router)
     app.include_router(images_router)  # Image serving with security
     app.include_router(knowledge_graph_router)  # Knowledge graph endpoints
+    app.include_router(registry_router)  # Authority registry API
     app.include_router(chat_router, prefix="/api/v1")  # Enhanced chat with synthesis linking
     
     # Exception handlers

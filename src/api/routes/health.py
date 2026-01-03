@@ -149,6 +149,13 @@ async def health_check(
             status="healthy",
             details=stats
         )
+    elif not settings.use_faiss:
+        # FAISS intentionally disabled - using pgvector instead
+        components["faiss"] = ComponentStatus(
+            status="disabled",
+            details={"info": "Using pgvector HNSW indexes instead"}
+        )
+        # Don't degrade overall status - this is intentional
     else:
         components["faiss"] = ComponentStatus(
             status="degraded",

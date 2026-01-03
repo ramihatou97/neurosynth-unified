@@ -43,6 +43,7 @@ class ChunkType(Enum):
     CLINICAL = "clinical"
     CASE = "case"
     GENERAL = "general"
+    FRONT_MATTER = "front_matter"  # Titles, authors, affiliations - deprioritized in search
 
 
 class ImageType(Enum):

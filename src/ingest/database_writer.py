@@ -409,6 +409,9 @@ class PipelineDatabaseWriter:
                 if isinstance(caption_embedding, np.ndarray):
                     caption_embedding = caption_embedding.tolist()
                 caption_embedding = '[' + ','.join(str(float(x)) for x in caption_embedding) + ']'
+                logger.debug(f"[DEBUG] Image {i}: caption_embedding has {len(caption_embedding.split(','))} dims")
+            else:
+                logger.debug(f"[DEBUG] Image {i}: NO caption_embedding (vlm_caption: {bool(image_data.get('vlm_caption'))})")
 
             records.append((
                 new_id,
@@ -864,6 +867,7 @@ class PipelineDatabaseWriter:
         
         # Caption embedding (1024d Voyage)
         caption_embedding = getattr(image, 'caption_embedding', None)
+        logger.debug(f"[EXTRACT] Image caption_embedding type: {type(caption_embedding)}, is None: {caption_embedding is None}")
         if caption_embedding is not None:
             if isinstance(caption_embedding, np.ndarray):
                 data['caption_embedding'] = caption_embedding.tolist()

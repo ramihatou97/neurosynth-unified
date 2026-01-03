@@ -6,7 +6,7 @@ Repository for UMLS entity operations.
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from uuid import UUID
 from dataclasses import dataclass
 
@@ -34,6 +34,11 @@ class EntityRepository(BaseRepository[Entity]):
     @property
     def table_name(self) -> str:
         return "entities"
+
+    @property
+    def updatable_columns(self) -> Set[str]:
+        return {'name', 'semantic_type', 'tui', 'chunk_count',
+                'image_count', 'metadata', 'aliases', 'source'}
 
     def _to_entity(self, row: dict) -> Entity:
         """Convert database row to Entity object."""

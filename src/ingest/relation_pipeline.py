@@ -375,13 +375,91 @@ class GraphAugmentedRAG:
     ) -> list[str]:
         """
         Rank neighbors by semantic similarity to question.
-        
-        For now, returns as-is. In production, compute cosine similarity
-        between question embedding and entity embeddings.
+
+        Uses precomputed entity embeddings from entity_embeddings table.
+        Falls back to original order if embeddings not available.
         """
-        # TODO: Implement embedding-based ranking
-        # This requires storing entity embeddings in the DB
-        return neighbors
+        import numpy as np
+
+        if not neighbors:
+            return neighbors
+
+        if not question_embedding:
+            logger.debug("No question embedding provided, skipping ranking")
+            return neighbors
+
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Check if entity_embeddings table exists
+                table_exists = await conn.fetchval("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_name = 'entity_embeddings'
+                    )
+                """)
+
+                if not table_exists:
+                    logger.warning(
+                        "entity_embeddings table not found. "
+                        "Run migration 003_entity_relations.sql and embed_entities.py"
+                    )
+                    return neighbors
+
+                # Get embeddings for neighbor entities
+                rows = await conn.fetch("""
+                    SELECT e.name, ee.embedding
+                    FROM entities e
+                    JOIN entity_embeddings ee ON e.id = ee.entity_id
+                    WHERE e.name = ANY($1)
+                      AND ee.embedding IS NOT NULL
+                """, neighbors)
+
+            if not rows:
+                logger.debug(
+                    f"No embeddings found for {len(neighbors)} neighbors. "
+                    "Run embed_entities.py to populate."
+                )
+                return neighbors
+
+            coverage = len(rows) / len(neighbors) * 100
+            logger.debug(f"Entity embedding coverage: {coverage:.1f}%")
+
+            # Build embedding lookup
+            entity_embeddings = {
+                row['name']: np.array(row['embedding'])
+                for row in rows
+            }
+
+            # Convert question embedding
+            query_vec = np.array(question_embedding)
+            query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-9)
+
+            # Score each neighbor
+            scored = []
+            for neighbor in neighbors:
+                if neighbor in entity_embeddings:
+                    emb = entity_embeddings[neighbor]
+                    emb_norm = emb / (np.linalg.norm(emb) + 1e-9)
+                    similarity = float(np.dot(query_norm, emb_norm))
+                    scored.append((neighbor, similarity))
+                else:
+                    scored.append((neighbor, 0.0))
+
+            # Sort by similarity descending
+            scored.sort(key=lambda x: x[1], reverse=True)
+
+            if logger.isEnabledFor(logging.DEBUG):
+                top_3 = scored[:3]
+                logger.debug(
+                    f"Top ranked entities: "
+                    f"{[(e, f'{s:.3f}') for e, s in top_3]}"
+                )
+
+            return [entity for entity, _ in scored]
+
+        except Exception as e:
+            logger.warning(f"Error ranking entities: {e}. Using original order.")
+            return neighbors
     
     async def _get_neighbor_chunks(
         self,

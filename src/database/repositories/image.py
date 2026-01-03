@@ -8,7 +8,7 @@ Supports dual embeddings: visual (BiomedCLIP 512d) and caption (Voyage 1024d).
 
 import logging
 import os
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from uuid import UUID
 import json
 
@@ -35,16 +35,23 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     @property
     def embedding_column(self) -> str:
         return "embedding"  # Default to visual embedding
-    
+
+    @property
+    def updatable_columns(self) -> Set[str]:
+        return {'caption', 'vlm_caption', 'caption_summary', 'alt_text',
+                'image_type', 'image_subtype', 'is_decorative',
+                'quality_score', 'clip_embedding', 'caption_embedding',
+                'cuis', 'metadata'}
+
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to image dict."""
         # DB columns: storage_path, caption, clip_embedding, original_filename
         # API expects: file_path, vlm_caption, embedding, file_name
         # DB stores: output/images/{job_id}/{filename}
         # API serves from: ./output/images/ so we need just {job_id}/{filename}
-        storage_path = row.get('storage_path') or row.get('file_path', '')
+        storage_path = row.get('storage_path') or row.get('file_path') or ''
         # Strip 'output/images/' prefix if present
-        if storage_path.startswith('output/images/'):
+        if storage_path and storage_path.startswith('output/images/'):
             storage_path = storage_path[len('output/images/'):]
         return {
             'id': row['id'],
@@ -197,8 +204,8 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     ) -> List[Dict[str, Any]]:
         """Get images for a document with optional pagination."""
         columns = """
-            i.id, i.document_id, i.storage_path as file_path, i.original_filename as file_name,
-            i.image_type, i.is_decorative, i.caption as vlm_caption, i.caption_summary
+            i.id, i.document_id, COALESCE(i.storage_path, i.file_path) as file_path, i.original_filename as file_name,
+            i.image_type, i.is_decorative, i.vlm_caption, i.caption_summary
         """
         if include_embedding:
             columns += ", i.clip_embedding as embedding"

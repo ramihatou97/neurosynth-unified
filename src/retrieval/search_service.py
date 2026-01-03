@@ -695,8 +695,14 @@ class SearchService:
             Results with adjusted final_score, re-sorted
         """
         BASELINE_AUTHORITY = 0.7
+        FRONT_MATTER_PENALTY = 0.1  # Severely deprioritize front matter chunks
 
         for result in results:
+            # Check for FRONT_MATTER chunk type - apply severe penalty
+            if result.chunk_type and result.chunk_type.value == "front_matter":
+                result.final_score *= FRONT_MATTER_PENALTY
+                continue
+
             authority = result.authority_score or BASELINE_AUTHORITY
             # Calculate boost: 1.0 + (authority - baseline) * factor
             # e.g., authority=1.0 → 1.0 + (1.0-0.7)*0.15 = 1.045

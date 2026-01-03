@@ -12,6 +12,7 @@ Key principles:
 5. Preserve figure references with context
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple, Dict
@@ -19,6 +20,8 @@ from uuid import uuid4
 
 from src.shared.models import SemanticChunk, ChunkType, NeuroEntity
 from .neuro_extractor import NeuroExpertTextExtractor
+
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -764,7 +767,67 @@ class NeuroSemanticChunker:
             table_refs=table_refs,
             keywords=keywords
         )
-    
+
+    def _is_front_matter(self, content: str, section_title: str) -> bool:
+        """
+        Detect front matter chunks (titles, authors, affiliations).
+
+        These chunks are tagged as FRONT_MATTER and given low authority score
+        to prevent them from polluting search results.
+        """
+        content_lower = content.lower()
+        section_lower = section_title.lower() if section_title else ""
+
+        # Front matter section titles
+        front_matter_sections = [
+            "authors", "contributors", "affiliations", "acknowledgments",
+            "acknowledgements", "copyright", "preface", "foreword",
+            "about the author", "about the editor", "dedication"
+        ]
+        if any(fm in section_lower for fm in front_matter_sections):
+            return True
+
+        # Chapter header patterns (standalone chapter titles with little content)
+        if re.match(r'^chapter\s+\d+', section_lower) or re.match(r'^chapter\s+[ivxlc]+', section_lower):
+            # If chunk is mostly just the chapter title (< 200 chars of real content)
+            if len(content.strip()) < 300:
+                return True
+
+        # Author credential patterns (high density suggests author list)
+        credential_patterns = [
+            r'\bm\.?d\.?\b', r'\bph\.?d\.?\b', r'\bf\.?a\.?c\.?s\.?\b',
+            r'\bf\.?r\.?c\.?s\.?\b', r'\bm\.?b\.?b\.?s\.?\b', r'\bd\.?o\.?\b',
+            r'\bm\.?s\.?\b', r'\bm\.?sc\.?\b', r'\bb\.?s\.?\b'
+        ]
+        credential_count = sum(1 for p in credential_patterns if re.search(p, content_lower))
+
+        # Institutional patterns
+        institution_words = [
+            "university", "hospital", "medical center", "department of",
+            "school of medicine", "institute", "college of", "faculty of",
+            "clinic", "center for"
+        ]
+        institution_count = sum(1 for w in institution_words if w in content_lower)
+
+        # Email patterns
+        email_count = len(re.findall(r'[\w\.-]+@[\w\.-]+\.\w+', content))
+
+        # High author/affiliation density = front matter
+        # (2+ credentials OR 2+ institutions OR emails) AND short content
+        if len(content.strip()) < 500:
+            if credential_count >= 2 or institution_count >= 2 or email_count >= 1:
+                # But make sure it's not a clinical case or procedure description
+                clinical_words = ["patient", "surgery", "procedure", "treatment", "diagnosis"]
+                if not any(cw in content_lower for cw in clinical_words):
+                    return True
+
+        # Keywords/index section patterns
+        if "keywords:" in content_lower or "key words:" in content_lower:
+            if len(content.strip()) < 300:
+                return True
+
+        return False
+
     def _classify_chunk(
         self,
         content: str,
@@ -776,7 +839,11 @@ class NeuroSemanticChunker:
         """
         content_lower = content.lower()
         section_lower = section_title.lower()
-        
+
+        # Check for front matter (titles, authors, affiliations) - deprioritize in search
+        if self._is_front_matter(content, section_title):
+            return ChunkType.FRONT_MATTER
+
         # Check section title first
         if any(w in section_lower for w in ["technique", "approach", "procedure", "surgical"]):
             return ChunkType.PROCEDURE

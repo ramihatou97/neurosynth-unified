@@ -41,6 +41,21 @@ ALLOWED_UPDATE_COLUMNS: Set[str] = {
     'specialty_relevance', 'topic_tags', 'entity_mentions'
 }
 
+# Whitelist of allowed condition columns for find_by() SQL injection prevention
+ALLOWED_CONDITION_COLUMNS: Set[str] = {
+    # Primary keys and foreign keys
+    'id', 'document_id', 'chunk_id', 'image_id', 'entity_id',
+    # Common filter fields
+    'cui', 'name', 'title', 'file_path', 'source_path',
+    'chunk_type', 'specialty', 'page_number', 'start_page',
+    'image_type', 'is_decorative', 'semantic_type',
+    'link_type', 'relation_type', 'tui', 'source',
+    # Graph fields
+    'source_entity_id', 'target_entity_id',
+    # Status fields
+    'status', 'content_hash'
+}
+
 
 class BaseRepository(ABC, Generic[T]):
     """
@@ -66,7 +81,17 @@ class BaseRepository(ABC, Generic[T]):
     def table_name(self) -> str:
         """Table name for this repository."""
         pass
-    
+
+    @property
+    def updatable_columns(self) -> Set[str]:
+        """
+        Columns that can be updated via update() method.
+
+        Override in subclasses to restrict which columns can be modified.
+        Empty set means use global ALLOWED_UPDATE_COLUMNS (backward compatible).
+        """
+        return set()
+
     @abstractmethod
     def _to_entity(self, row: dict) -> T:
         """Convert database row to entity object."""
@@ -100,6 +125,26 @@ class BaseRepository(ABC, Generic[T]):
             return f"{column} ASC"
 
         return f"{column} {direction.upper()}"
+
+    def _validate_condition_column(self, column: str) -> bool:
+        """
+        Validate that a column name is allowed in WHERE conditions.
+
+        Prevents SQL injection via dynamic column names in find_by().
+
+        Args:
+            column: Column name to validate
+
+        Returns:
+            True if column is allowed, False otherwise
+        """
+        if column.lower() not in ALLOWED_CONDITION_COLUMNS:
+            logger.warning(
+                f"Invalid condition column: '{column}' for table {self.table_name}. "
+                f"Skipping this condition. Add to ALLOWED_CONDITION_COLUMNS if legitimate."
+            )
+            return False
+        return True
 
     # =========================================================================
     # Read Operations
@@ -200,37 +245,50 @@ class BaseRepository(ABC, Generic[T]):
         return len(entities)
     
     async def update(self, id: UUID, updates: Dict[str, Any]) -> Optional[T]:
-        """Update an entity."""
+        """
+        Update an entity.
+
+        Security: Only columns in updatable_columns (or ALLOWED_UPDATE_COLUMNS
+        if updatable_columns is empty) can be modified.
+        """
         if not updates:
             return await self.get_by_id(id)
 
-        # Build SET clause with column validation
+        # Determine allowed columns
+        allowed = self.updatable_columns
+        if not allowed:
+            # Backward compatible: use global whitelist
+            allowed = ALLOWED_UPDATE_COLUMNS
+
+        # Filter to valid columns only
         set_parts = []
         values = []
         param_idx = 1
+
         for key, value in updates.items():
-            # Validate update column to prevent SQL injection
-            if key.lower() not in ALLOWED_UPDATE_COLUMNS:
-                logger.warning(f"Invalid update column: '{key}'. Skipping.")
+            if key.lower() not in allowed:
+                logger.warning(
+                    f"Column '{key}' not allowed for update on {self.table_name}. Skipping."
+                )
                 continue
+
             set_parts.append(f"{key} = ${param_idx}")
             values.append(value)
             param_idx += 1
 
-        # If all columns were invalid, return unchanged entity
         if not set_parts:
-            logger.warning("No valid update columns provided.")
+            logger.warning("No valid columns to update. Returning current entity.")
             return await self.get_by_id(id)
-        
+
         values.append(id)
-        
+
         query = f"""
             UPDATE {self.table_name}
             SET {', '.join(set_parts)}, updated_at = CURRENT_TIMESTAMP
             WHERE id = ${len(values)}
             RETURNING *
         """
-        
+
         row = await self.db.fetchrow(query, *values)
         return self._to_entity(dict(row)) if row else None
     
@@ -260,21 +318,36 @@ class BaseRepository(ABC, Generic[T]):
         limit: int = 100,
         order_by: str = "created_at DESC"
     ) -> List[T]:
-        """Find entities matching conditions."""
+        """
+        Find entities matching conditions.
+
+        Security: Only columns in ALLOWED_CONDITION_COLUMNS will be used.
+        Invalid columns are logged and skipped.
+        """
         if not conditions:
             return await self.get_all(limit=limit, order_by=order_by)
 
         safe_order_by = self._validate_order_by(order_by)
         where_parts = []
         values = []
-        for i, (key, value) in enumerate(conditions.items(), start=1):
-            if isinstance(value, list):
-                where_parts.append(f"{key} = ANY(${i})")
-            else:
-                where_parts.append(f"{key} = ${i}")
-            values.append(value)
+        param_idx = 1
 
-        values.extend([limit])
+        for key, value in conditions.items():
+            if not self._validate_condition_column(key):
+                continue  # Skip invalid columns
+
+            if isinstance(value, list):
+                where_parts.append(f"{key} = ANY(${param_idx})")
+            else:
+                where_parts.append(f"{key} = ${param_idx}")
+            values.append(value)
+            param_idx += 1
+
+        if not where_parts:
+            logger.warning("All conditions were invalid. Returning empty result.")
+            return []
+
+        values.append(limit)
 
         query = f"""
             SELECT * FROM {self.table_name}

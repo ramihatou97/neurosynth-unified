@@ -6,7 +6,7 @@ Repository for document CRUD operations.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from uuid import UUID
 from datetime import datetime
 import json
@@ -27,7 +27,13 @@ class DocumentRepository(BaseRepository):
     @property
     def table_name(self) -> str:
         return "documents"
-    
+
+    @property
+    def updatable_columns(self) -> Set[str]:
+        return {'title', 'file_path', 'total_pages', 'total_chunks',
+                'total_images', 'specialty', 'authority_score',
+                'metadata', 'status', 'error_message'}
+
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to document dict."""
         # Note: Schema uses file_path, not source_path

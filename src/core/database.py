@@ -534,14 +534,15 @@ class NeuroDatabase:
                 image_type, is_decorative, quality_score,
                 caption, caption_confidence, figure_id, surrounding_text,
                 sequence_id, sequence_position, chunk_ids, embedding,
-                vlm_caption, caption_summary
+                vlm_caption, caption_summary, caption_embedding
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
             )
         """)
 
         for img in images:
             embedding = img.embedding.tolist() if img.embedding is not None else None
+            caption_embedding = img.caption_embedding.tolist() if img.caption_embedding is not None else None
 
             await stmt.fetchval(
                 UUID(img.id), UUID(img.document_id), img.page_number, str(img.file_path),
@@ -550,7 +551,8 @@ class NeuroDatabase:
                 img.caption, img.caption_confidence, img.figure_id,
                 img.surrounding_text[:1000] if img.surrounding_text else None,
                 img.sequence_id, img.sequence_position, img.chunk_ids, embedding,
-                getattr(img, 'vlm_caption', None), getattr(img, 'caption_summary', None)
+                getattr(img, 'vlm_caption', None), getattr(img, 'caption_summary', None),
+                caption_embedding
             )
     
     async def get_document_images(self, doc_id: str) -> List[ExtractedImage]:

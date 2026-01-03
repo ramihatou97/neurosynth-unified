@@ -6,7 +6,7 @@ Repository for text chunk CRUD and vector search operations.
 """
 
 import logging
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, Set
 from uuid import UUID
 from datetime import datetime
 import json
@@ -33,7 +33,13 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
     @property
     def embedding_column(self) -> str:
         return "embedding"
-    
+
+    @property
+    def updatable_columns(self) -> Set[str]:
+        return {'content', 'summary', 'content_hash', 'chunk_type',
+                'specialty_relevance', 'entity_mentions',
+                'embedding', 'metadata'}
+
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to chunk dict."""
         return {
@@ -210,7 +216,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             offset: Skip results (for pagination)
         """
         columns = """
-            id, document_id, content, page_number, sequence_in_doc,
+            id, document_id, content, COALESCE(page_number, page_start, start_page) as page_number, sequence_in_doc,
             chunk_type, specialty, entity_mentions, summary, cuis
         """
         if include_embedding:

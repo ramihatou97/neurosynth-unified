@@ -8,7 +8,7 @@ discovered through proximity, semantic similarity, and CUI matching.
 """
 
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Set
 from uuid import UUID
 import json
 
@@ -30,7 +30,12 @@ class LinkRepository(BaseRepository):
     @property
     def table_name(self) -> str:
         return "links"
-    
+
+    @property
+    def updatable_columns(self) -> Set[str]:
+        return {'score', 'link_type', 'proximity_score',
+                'semantic_score', 'cui_overlap_score', 'metadata'}
+
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to link dict."""
         return {

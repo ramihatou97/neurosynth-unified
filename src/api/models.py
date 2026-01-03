@@ -359,7 +359,7 @@ class DocumentChunksResponse(BaseModel):
 
 class ComponentStatus(BaseModel):
     """Status of a component."""
-    status: str = Field(..., pattern="^(healthy|degraded|unhealthy)$")
+    status: str = Field(..., pattern="^(healthy|degraded|unhealthy|disabled)$")
     latency_ms: Optional[int] = None
     details: Dict[str, Any] = Field(default_factory=dict)
 

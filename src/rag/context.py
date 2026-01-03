@@ -222,6 +222,13 @@ class ContextAssembler:
         
         # Filter to chunks only (not images)
         chunks = [r for r in search_results if getattr(r, 'result_type', 'chunk') == 'chunk']
+
+        # Exclude FRONT_MATTER chunks from RAG context (titles, authors, affiliations)
+        chunks = [
+            r for r in chunks
+            if not (getattr(r, 'chunk_type', None) and
+                    getattr(r.chunk_type, 'value', None) == 'front_matter')
+        ]
         chunks_available = len(chunks)
         
         # Select chunks within budget

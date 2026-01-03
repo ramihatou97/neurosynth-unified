@@ -473,6 +473,12 @@ async def cancel_job(job_id: str):
     return {"status": "cancelled", "job_id": job_id}
 
 
+@router.post("/cancel/{job_id}")
+async def cancel_job_alias(job_id: str):
+    """Alias for /{job_id}/cancel (frontend compatibility)."""
+    return await cancel_job(job_id)
+
+
 # =============================================================================
 # BATCH UPLOAD CONFIGURATION
 # =============================================================================

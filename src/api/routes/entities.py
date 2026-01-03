@@ -413,6 +413,11 @@ class BulkDeleteRequest(BaseModel):
     ids: List[str] = Field(..., description="List of entity IDs to delete")
 
 
+class BulkDeleteByCUIRequest(BaseModel):
+    """Request model for bulk delete by CUI (frontend compatibility)."""
+    cuis: List[str] = Field(..., description="List of CUIs to delete")
+
+
 class DeleteResponse(BaseModel):
     """Response for delete operations."""
     deleted: int
@@ -505,6 +510,106 @@ async def bulk_delete_entities(
         raise
     except Exception as e:
         logger.error(f"Error bulk deleting entities: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "/by-cui",
+    response_model=DeleteResponse,
+    summary="Bulk delete entities by CUI",
+    description="Delete multiple entities by their CUI identifiers (frontend compatibility)"
+)
+async def bulk_delete_entities_by_cui(
+    request: BulkDeleteByCUIRequest,
+    database = Depends(get_database)
+):
+    """Delete multiple entities by CUI. Frontend-compatible endpoint."""
+    if not await _check_entities_schema(database):
+        _raise_schema_error()
+
+    if not request.cuis:
+        raise HTTPException(status_code=400, detail="No CUIs provided")
+
+    try:
+        # Get UUIDs for the given CUIs
+        rows = await database.fetch(
+            "SELECT id FROM entities WHERE cui = ANY($1::text[])",
+            request.cuis
+        )
+
+        if not rows:
+            return DeleteResponse(deleted=0, message="No matching entities found")
+
+        uuids = [str(row['id']) for row in rows]
+
+        # Delete entity-chunk links first
+        await database.execute(
+            "DELETE FROM entity_chunk_links WHERE entity_id = ANY($1::uuid[])",
+            uuids
+        )
+
+        # Delete entities
+        result = await database.execute(
+            "DELETE FROM entities WHERE id = ANY($1::uuid[])",
+            uuids
+        )
+
+        count = int(result.split()[-1]) if result else 0
+
+        logger.info(f"Bulk deleted {count} entities by CUI")
+        return DeleteResponse(deleted=count, message=f"Deleted {count} entities")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error bulk deleting entities by CUI: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete(
+    "/cui/{cui}",
+    response_model=DeleteResponse,
+    summary="Delete entity by CUI",
+    description="Delete a specific entity by its CUI identifier"
+)
+async def delete_entity_by_cui(
+    cui: str,
+    database = Depends(get_database)
+):
+    """Delete a single entity by CUI. Frontend-compatible endpoint."""
+    if not await _check_entities_schema(database):
+        _raise_schema_error()
+
+    try:
+        # Get entity UUID by CUI
+        entity_id = await database.fetchval(
+            "SELECT id FROM entities WHERE cui = $1", cui
+        )
+
+        if not entity_id:
+            raise HTTPException(status_code=404, detail=f"Entity with CUI {cui} not found")
+
+        uuid_str = str(entity_id)
+
+        # Delete entity-chunk links first
+        await database.execute(
+            "DELETE FROM entity_chunk_links WHERE entity_id = $1::uuid",
+            uuid_str
+        )
+
+        # Delete entity
+        await database.execute(
+            "DELETE FROM entities WHERE id = $1::uuid",
+            uuid_str
+        )
+
+        logger.info(f"Deleted entity by CUI: {cui}")
+        return DeleteResponse(deleted=1, message=f"Deleted entity {cui}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting entity by CUI {cui}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
