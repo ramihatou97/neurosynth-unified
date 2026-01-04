@@ -341,6 +341,7 @@ class PipelineDatabaseWriter:
                 doc_id,
                 chunk_data.get('content', ''),
                 chunk_data.get('content_hash'),
+                chunk_data.get('summary'),  # AI-generated summary
                 chunk_data.get('page_number'),
                 chunk_data.get('chunk_index', i),
                 chunk_data.get('start_char'),
@@ -360,11 +361,11 @@ class PipelineDatabaseWriter:
         await conn.executemany(
             """
             INSERT INTO chunks (
-                id, document_id, content, content_hash, page_number, chunk_index,
+                id, document_id, content, content_hash, summary, page_number, chunk_index,
                 start_char, end_char, chunk_type, specialty, embedding, cuis,
                 entities, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13::jsonb, $14::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13, $14::jsonb, $15::jsonb)
             """,
             records
         )

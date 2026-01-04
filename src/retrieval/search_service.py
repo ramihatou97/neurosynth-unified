@@ -466,12 +466,13 @@ class SearchService:
         where_clause = " AND ".join(conditions)
 
         # Query using schema-aligned column names (v4.1)
-        # Schema columns: page_number, cuis, entities, specialty
+        # Schema columns: page_number, cuis, entities, specialty, summary
         query = f"""
             SELECT
                 c.id,
                 c.document_id,
                 c.content,
+                c.summary,
                 c.page_number,
                 c.chunk_type,
                 c.cuis,
@@ -539,6 +540,7 @@ class SearchService:
                 semantic_score=0.0,  # Set from FAISS scores later
                 final_score=0.0,  # Computed from weighted scores
                 document_title=row.get('document_title'),
+                summary=row.get('summary'),  # AI-generated summary
                 images=[],  # Populated by _attach_linked_images()
                 readability_score=0.0,  # Not in DB schema, use default
                 coherence_score=0.0,    # Not in DB schema, use default
@@ -790,8 +792,10 @@ class SearchService:
                 i.id,
                 i.document_id,
                 i.file_path,
+                i.page_number,
                 i.caption,
                 i.vlm_caption,
+                i.caption_summary,
                 i.caption_embedding,
                 i.image_type,
                 i.width,
@@ -831,13 +835,14 @@ class SearchService:
                 id=str(row['id']),
                 document_id=str(row['document_id']),
                 file_path=Path(file_path_str),
-                page_number=0,
+                page_number=row.get('page_number') or 0,
                 width=row.get('width') or 0,
                 height=row.get('height') or 0,
                 format=row.get('format') or 'JPEG',
                 content_hash='',
                 caption=row.get('caption') or '',
                 vlm_caption=row.get('vlm_caption') or '',
+                caption_summary=row.get('caption_summary'),
                 caption_embedding=caption_embedding,
                 image_type=row.get('image_type') or 'unknown',
                 quality_score=row.get('quality_score') or 0.0
@@ -1117,6 +1122,7 @@ class PostgresVectorSearcher:
                 c.id AS chunk_id,
                 c.document_id,
                 c.content,
+                c.summary,
                 c.page_number,
                 c.chunk_type,
                 c.cuis,
@@ -1170,6 +1176,7 @@ class PostgresVectorSearcher:
                 semantic_score=float(row['similarity_score']),
                 final_score=float(row['similarity_score']),
                 document_title=row.get('document_title'),
+                summary=row.get('summary'),  # AI-generated summary
                 images=[],
             ))
 

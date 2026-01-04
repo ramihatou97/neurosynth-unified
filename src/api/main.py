@@ -48,6 +48,7 @@ from src.api.routes.images import router as images_router
 from src.api.routes.knowledge_graph import router as knowledge_graph_router
 from src.api.routes.registry import router as registry_router, load_registry_from_db
 from src.chat.routes import router as chat_router
+from src.library.routes import router as library_router
 
 # Configure logging
 logging.basicConfig(
@@ -171,6 +172,9 @@ Currently open access. Production deployments should add authentication.
     # V3 Routes - Enhanced RAG and Synthesis with web research
     app.include_router(rag_v3_router)  # /api/rag/v3/* - Unified RAG with tri-modal processing
     app.include_router(synthesis_v3_router)  # /api/synthesis/v3/* - Enhanced synthesis with enrichment
+
+    # Library Scanner - PDF metadata extraction and selective ingestion
+    app.include_router(library_router, prefix="/api/v1")  # /api/v1/library/*
     
     # Exception handlers
     @app.exception_handler(RequestValidationError)

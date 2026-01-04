@@ -935,6 +935,7 @@ class SearchResult:
     semantic_score: float
     final_score: float
     document_title: Optional[str] = None
+    summary: Optional[str] = None  # AI-generated summary (Stage 4.5)
     cuis: List[str] = field(default_factory=list)  # UMLS Concept Unique Identifiers
     images: List[ExtractedImage] = field(default_factory=list)
     # Quality scores (populated from chunks table)

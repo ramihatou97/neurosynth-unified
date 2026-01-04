@@ -47,6 +47,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             'document_id': row['document_id'],
             'content': row['content'],
             'content_hash': row.get('content_hash'),
+            'summary': row.get('summary'),  # AI-generated summary (Stage 4.5)
             'page_number': row.get('page_number'),
             'chunk_index': row.get('chunk_index'),
             'start_char': row.get('start_char'),

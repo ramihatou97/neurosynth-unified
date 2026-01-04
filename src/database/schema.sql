@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     -- Content
     content TEXT NOT NULL,
     content_hash TEXT,  -- For deduplication
+    summary TEXT,       -- AI-generated summary (Stage 4.5)
     
     -- Position
     page_number INTEGER,
@@ -107,7 +108,8 @@ CREATE TABLE IF NOT EXISTS images (
     -- VLM Caption
     vlm_caption TEXT,
     vlm_confidence FLOAT,
-    
+    caption_summary TEXT,  -- AI-generated caption summary (Stage 8.5)
+
     -- Embeddings
     embedding vector(512),        -- BiomedCLIP visual embedding
     caption_embedding vector(1024),  -- Voyage-3 caption embedding

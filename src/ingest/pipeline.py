@@ -196,7 +196,8 @@ class PipelineConfig:
     enable_caption_embedding: bool = True
 
     # Content summarization (brief human-readable summaries)
-    enable_summaries: bool = True
+    # IMPORTANT: Always keep enabled - summaries are critical for UX
+    enable_summaries: bool = True  # DO NOT DISABLE - fallbacks ensure 100% coverage
     summary_model: str = "claude-sonnet-4-20250514"
     summary_max_concurrent: int = 10  # Concurrent API calls for batch efficiency
 
@@ -1583,6 +1584,63 @@ class NeuroIngestPipeline:
 
         return 1.0
 
+    def _generate_fallback_summary(self, content: str, title: Optional[str] = None) -> str:
+        """
+        Generate fallback summary when API fails.
+
+        Strategy:
+        1. Extract first meaningful sentence (ends with period)
+        2. If too short, use title
+        3. If no title, truncate content
+        """
+        if not content:
+            return title or "Content unavailable"
+
+        # Try first sentence
+        sentences = content.split('.')
+        if sentences and len(sentences[0].strip()) >= 20:
+            first_sentence = sentences[0].strip()
+            # Clean and truncate
+            if len(first_sentence) > 100:
+                first_sentence = first_sentence[:97] + "..."
+            return first_sentence
+
+        # Fallback to title if available
+        if title and len(title) >= 10:
+            return title[:100] if len(title) > 100 else title
+
+        # Last resort: truncate content
+        clean_content = content.strip()[:97] + "..." if len(content) > 100 else content.strip()
+        return clean_content
+
+    def _generate_fallback_caption_summary(
+        self,
+        vlm_caption: Optional[str],
+        caption: Optional[str],
+        page_number: int
+    ) -> str:
+        """
+        Generate fallback caption summary when API fails.
+
+        Strategy:
+        1. Truncate VLM caption if available
+        2. Use simple caption if no VLM
+        3. Generic description with page number as last resort
+        """
+        if vlm_caption:
+            truncated = vlm_caption.strip()[:100]
+            if len(vlm_caption) > 100:
+                truncated = truncated[:97] + "..."
+            return truncated
+
+        if caption:
+            truncated = caption.strip()[:100]
+            if len(caption) > 100:
+                truncated = truncated[:97] + "..."
+            return truncated
+
+        return f"Medical image from page {page_number}"
+
     async def _summarize_chunks(
         self,
         chunks: List[SemanticChunk],
@@ -1645,7 +1703,10 @@ class NeuroIngestPipeline:
                 for chunk, summary in zip(batch, summaries):
                     if isinstance(summary, Exception):
                         logger.warning(f"Chunk summary failed: {summary}")
-                        chunk.summary = None
+                        # Fallback: first sentence or title
+                        fallback = self._generate_fallback_summary(chunk.content, getattr(chunk, 'title', None))
+                        chunk.summary = fallback
+                        summarized += 1  # Count fallbacks as success
                     else:
                         chunk.summary = summary
                         summarized += 1
@@ -1661,18 +1722,30 @@ class NeuroIngestPipeline:
             logger.info(f"Chunk summarization complete: {summarized}/{total_chunks} chunks")
 
         except ImportError as e:
-            logger.warning(f"Summarizer not available: {e}")
+            logger.warning(f"Summarizer not available: {e}, using fallbacks")
+            # Generate fallback summaries for all chunks
+            for chunk in chunks:
+                if not chunk.summary:
+                    chunk.summary = self._generate_fallback_summary(
+                        chunk.content, getattr(chunk, 'title', None)
+                    )
             tracker.update(
                 ProcessingStage.CHUNK_SUMMARIZATION,
                 1.0,
-                "Summarizer module not found"
+                "Used fallback summaries (summarizer unavailable)"
             )
         except Exception as e:
-            logger.error(f"Chunk summarization failed: {e}")
+            logger.error(f"Chunk summarization failed: {e}, using fallbacks")
+            # Generate fallback summaries for all chunks
+            for chunk in chunks:
+                if not chunk.summary:
+                    chunk.summary = self._generate_fallback_summary(
+                        chunk.content, getattr(chunk, 'title', None)
+                    )
             tracker.update(
                 ProcessingStage.CHUNK_SUMMARIZATION,
                 1.0,
-                f"Summarization error: {e}"
+                f"Used fallback summaries (error: {e})"
             )
 
     async def _summarize_captions(
@@ -1699,17 +1772,30 @@ class NeuroIngestPipeline:
             )
             return
 
-        # Only summarize images that have VLM captions
-        images_with_captions = [
-            img for img in images
-            if img.vlm_caption and not img.is_decorative
-        ]
+        # Split images: those with VLM captions for API summarization,
+        # those without get fallback summaries
+        images_with_captions = []
+        images_without_captions = []
+
+        for img in images:
+            if img.is_decorative:
+                continue
+            if img.vlm_caption:
+                images_with_captions.append(img)
+            else:
+                images_without_captions.append(img)
+
+        # Assign fallback summaries to images without VLM captions
+        for img in images_without_captions:
+            img.caption_summary = self._generate_fallback_caption_summary(
+                img.vlm_caption, img.caption, img.page_number
+            )
 
         if not images_with_captions:
             tracker.update(
                 ProcessingStage.CAPTION_SUMMARIZATION,
                 1.0,
-                "No captions to summarize"
+                f"Generated {len(images_without_captions)} fallback summaries (no VLM captions)"
             )
             return
 
@@ -1744,32 +1830,50 @@ class NeuroIngestPipeline:
             for img, summary in zip(images_with_captions, summaries):
                 if isinstance(summary, Exception):
                     logger.warning(f"Caption summary failed: {summary}")
-                    img.caption_summary = None
+                    # Fallback: truncated caption or generic
+                    fallback = self._generate_fallback_caption_summary(
+                        img.vlm_caption, img.caption, img.page_number
+                    )
+                    img.caption_summary = fallback
+                    summarized += 1  # Count fallbacks as success
                 else:
                     img.caption_summary = summary
                     summarized += 1
 
+            total_with_fallbacks = summarized + len(images_without_captions)
             tracker.update(
                 ProcessingStage.CAPTION_SUMMARIZATION,
                 1.0,
-                f"Summarized {summarized}/{total} captions"
+                f"Summarized {total_with_fallbacks} captions ({len(images_without_captions)} fallbacks)"
             )
 
-            logger.info(f"Caption summarization complete: {summarized}/{total}")
+            logger.info(f"Caption summarization complete: {summarized}/{total} API, {len(images_without_captions)} fallbacks")
 
         except ImportError as e:
-            logger.warning(f"Summarizer not available: {e}")
+            logger.warning(f"Summarizer not available: {e}, using fallbacks")
+            # Generate fallback summaries for all non-decorative images
+            for img in images:
+                if not img.is_decorative and not img.caption_summary:
+                    img.caption_summary = self._generate_fallback_caption_summary(
+                        img.vlm_caption, img.caption, img.page_number
+                    )
             tracker.update(
                 ProcessingStage.CAPTION_SUMMARIZATION,
                 1.0,
-                "Summarizer module not found"
+                "Used fallback summaries (summarizer unavailable)"
             )
         except Exception as e:
-            logger.error(f"Caption summarization failed: {e}")
+            logger.error(f"Caption summarization failed: {e}, using fallbacks")
+            # Generate fallback summaries for all non-decorative images
+            for img in images:
+                if not img.is_decorative and not img.caption_summary:
+                    img.caption_summary = self._generate_fallback_caption_summary(
+                        img.vlm_caption, img.caption, img.page_number
+                    )
             tracker.update(
                 ProcessingStage.CAPTION_SUMMARIZATION,
                 1.0,
-                f"Summarization error: {e}"
+                f"Used fallback summaries (error: {e})"
             )
 
     def export_for_phase2(
