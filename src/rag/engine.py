@@ -580,6 +580,9 @@ class RAGEngine:
                         full_response += text
                         yield text
 
+        except asyncio.CancelledError:
+            logger.info("Streaming cancelled by client disconnect")
+            raise  # Re-raise to stop execution properly
         except CircuitOpenError as e:
             logger.warning(f"Claude circuit open during streaming: {e}")
             yield self._fallback_response(prompt)

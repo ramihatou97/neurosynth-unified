@@ -144,7 +144,7 @@ class SearchResultItem(BaseModel):
     @property
     def page_number(self) -> int:
         """Alias for page_start (backward compatibility)."""
-        return self.page_start
+        return self.page_start if self.page_start is not None else 0
 
     @property
     def score(self) -> float:

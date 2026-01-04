@@ -144,8 +144,8 @@ class JobStore:
             self.jobs[job_id]["updated_at"] = datetime.now().isoformat()
 
     def get_history(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get job history. Note: returns reference, not copy."""
-        return self.history[:limit]
+        """Get job history. Returns defensive copy to prevent external mutation."""
+        return [job.copy() for job in self.history[:limit]]
 
 
 # Global job store
@@ -205,7 +205,7 @@ async def process_document_task(
 
     try:
         # Update to processing status
-        _job_store.update_job(
+        await _job_store.update_job_async(
             job_id,
             stage="initializing",
             progress=5,
@@ -291,18 +291,19 @@ async def process_document_task(
             # Normalize stage name for frontend
             stage_name = stage_name_map.get(raw_stage, raw_stage)
 
-            _job_store.update_job(
+            # Use asyncio.create_task for thread-safe update from sync callback
+            asyncio.create_task(_job_store.update_job_async(
                 job_id,
                 stage=stage_name,
                 progress=overall,
                 current_operation=msg
-            )
+            ))
 
         # Create and initialize pipeline WITH progress callback
         pipeline = UnifiedPipeline(config=pipeline_config, on_progress=progress_callback)
         await pipeline.initialize()
 
-        _job_store.update_job(
+        await _job_store.update_job_async(
             job_id,
             stage="extraction",
             progress=10,
@@ -321,14 +322,14 @@ async def process_document_task(
         # CRITICAL FIX 1: Check for explicit pipeline errors
         if result.error:
             logger.error(f"Job {job_id} pipeline error: {result.error}")
-            _job_store.fail_job(job_id, result.error)
+            await _job_store.fail_job_async(job_id, result.error)
             return
 
         # CRITICAL FIX 2: Validate content was actually produced
         if result.chunk_count == 0 and result.image_count == 0:
             msg = "Pipeline completed but produced 0 chunks and 0 images. Check PDF content/encryption."
             logger.warning(f"Job {job_id}: {msg}")
-            _job_store.fail_job(job_id, msg)
+            await _job_store.fail_job_async(job_id, msg)
             return
 
         # SUCCESS: Create summary and complete job
@@ -341,12 +342,12 @@ async def process_document_task(
             "pages": result.total_pages
         }
 
-        _job_store.complete_job(job_id, summary)
+        await _job_store.complete_job_async(job_id, summary)
         logger.info(f"Job {job_id} completed successfully: {summary}")
 
     except Exception as e:
         logger.exception(f"Job {job_id} failed with exception: {e}")
-        _job_store.fail_job(job_id, str(e))
+        await _job_store.fail_job_async(job_id, str(e))
 
     finally:
         # Cleanup temp file

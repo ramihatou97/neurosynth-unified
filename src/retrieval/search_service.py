@@ -73,16 +73,18 @@ class SearchFilters:
     image_types: List[str] = field(default_factory=list)
     cuis: List[str] = field(default_factory=list)
     page_range: Tuple[int, int] = None  # (min_page, max_page)
-    
+    min_quality: float = None  # Minimum quality score (0-1)
+
     @property
     def has_filters(self) -> bool:
         return bool(
-            self.document_ids or 
-            self.chunk_types or 
-            self.specialties or 
-            self.image_types or 
+            self.document_ids or
+            self.chunk_types or
+            self.specialties or
+            self.image_types or
             self.cuis or
-            self.page_range
+            self.page_range or
+            self.min_quality
         )
 
 
@@ -176,7 +178,7 @@ class SearchService:
         self.text_weight = self.config.get('text_weight', 0.7)
         self.image_weight = self.config.get('image_weight', 0.3)
         self.cui_boost = self.config.get('cui_boost', 1.2)
-        self.min_similarity = self.config.get('min_similarity', 0.3)
+        self.min_similarity = self.config.get('min_similarity', 0.1)
         self.max_linked_images = self.config.get('max_linked_images', 3)
 
         # Determine active backend for logging/debugging
@@ -454,6 +456,12 @@ class SearchService:
             conditions.append(f"c.page_number >= ${param_idx} AND c.page_number <= ${param_idx + 1}")
             params.extend(filters.page_range)
             param_idx += 2
+
+        if filters.min_quality is not None and filters.min_quality > 0:
+            # Use type_specific_score as quality proxy (v2.2+)
+            conditions.append(f"COALESCE(c.type_specific_score, 0) >= ${param_idx}")
+            params.append(filters.min_quality)
+            param_idx += 1
 
         where_clause = " AND ".join(conditions)
 
@@ -1007,7 +1015,7 @@ class PostgresVectorSearcher:
         self.db = database
         self.embedder = embedder
         self.config = config or {}
-        self.min_similarity = self.config.get('min_similarity', 0.3)
+        self.min_similarity = self.config.get('min_similarity', 0.1)
 
     def _validate_embedding_dimension(
         self,
@@ -1094,6 +1102,11 @@ class PostgresVectorSearcher:
             conditions.append(f"c.page_number <= ${param_idx + 1}")
             params.extend(filters.page_range)
             param_idx += 2
+
+        if filters.min_quality is not None and filters.min_quality > 0:
+            conditions.append(f"COALESCE(c.type_specific_score, 0) >= ${param_idx}")
+            params.append(filters.min_quality)
+            param_idx += 1
 
         where_clause = " AND ".join(conditions)
 

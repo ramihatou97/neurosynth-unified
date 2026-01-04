@@ -278,10 +278,19 @@ class Settings:
         Get CORS origins from environment variable.
 
         Returns:
-            List of allowed origins. Defaults to ["*"] for development.
+            List of allowed origins. Defaults to localhost in debug mode,
+            empty list in production (blocking cross-origin requests).
         """
-        origins_str = os.getenv("CORS_ORIGINS", "*")
-        return [origin.strip() for origin in origins_str.split(",")]
+        origins_str = os.getenv("CORS_ORIGINS", "")
+
+        if not origins_str:
+            if self.debug:
+                return ["http://localhost:3000", "http://127.0.0.1:3000"]
+            else:
+                logger.warning("CORS_ORIGINS not set - blocking cross-origin requests")
+                return []
+
+        return [origin.strip() for origin in origins_str.split(",") if origin.strip()]
 
 
 @lru_cache()

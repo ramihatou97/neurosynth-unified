@@ -300,6 +300,49 @@ async def conversation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get(
+    "/conversation/{conversation_id}",
+    summary="Get conversation",
+    description="Retrieve an existing conversation by ID"
+)
+async def get_conversation(
+    conversation_id: str,
+    store = Depends(get_conversation_store)
+):
+    """
+    Get conversation details including history.
+
+    Returns conversation data if found, 404 if not found.
+    """
+    conv = store.get(conversation_id)
+    if not conv:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Conversation not found: {conversation_id}"
+        )
+
+    # Extract history from conversation object
+    # RAGConversation stores history as: [{'question': str, 'answer': str, 'citations': [...]}]
+    history = []
+    if hasattr(conv, 'history'):
+        for turn in conv.history:
+            history.append({
+                "role": "user",
+                "content": turn.get("question", "")
+            })
+            history.append({
+                "role": "assistant",
+                "content": turn.get("answer", "")
+            })
+
+    return {
+        "conversation_id": conversation_id,
+        "history": history,
+        "history_length": len(conv.history) if hasattr(conv, 'history') else 0,
+        "message_count": len(history)
+    }
+
+
 @router.delete(
     "/conversation/{conversation_id}",
     summary="End conversation",
