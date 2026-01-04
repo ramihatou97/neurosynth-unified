@@ -342,7 +342,7 @@ class PipelineDatabaseWriter:
                 chunk_data.get('content', ''),
                 chunk_data.get('content_hash'),
                 chunk_data.get('page_number'),
-                chunk_data.get('chunk_index', i),  # maps to sequence_in_doc
+                chunk_data.get('chunk_index', i),
                 chunk_data.get('start_char'),
                 chunk_data.get('end_char'),
                 chunk_data.get('chunk_type'),
@@ -351,21 +351,20 @@ class PipelineDatabaseWriter:
                 chunk_data.get('cuis', []),
                 json.dumps(chunk_data.get('entities', [])),
                 json.dumps(chunk_data.get('metadata', {})),
-                chunk_data.get('summary')
             ))
 
             if on_progress and (i + 1) % 50 == 0:
                 on_progress("chunks", i + 1, len(chunks))
 
-        # Batch insert using executemany (schema has created_at with default, no updated_at)
+        # Batch insert using executemany (schema v4.1 aligned)
         await conn.executemany(
             """
             INSERT INTO chunks (
-                id, document_id, content, content_hash, page_number, sequence_in_doc,
+                id, document_id, content, content_hash, page_number, chunk_index,
                 start_char, end_char, chunk_type, specialty, embedding, cuis,
-                entities, metadata, summary
+                entities, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13::jsonb, $14::jsonb, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::vector, $12, $13::jsonb, $14::jsonb)
             """,
             records
         )

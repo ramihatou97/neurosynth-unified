@@ -97,6 +97,20 @@ from src.rag.prompts import (
     QUESTION_TEMPLATES
 )
 
+# V3 Unified RAG Engine
+from src.rag.unified_engine import (
+    UnifiedRAGEngine,
+    UnifiedRAGConfig,
+    QueryMode,
+    QueryComplexity,
+    UnifiedResponse,
+    Citation as UnifiedCitation,
+    QueryRouter,
+    StandardEngine,
+    DeepResearchEngine,
+    ExternalEngine,
+)
+
 __all__ = [
     # Context
     'ContextAssembler',
@@ -123,5 +137,17 @@ __all__ = [
     'get_medical_system_prompt',
     'format_question',
     'SYSTEM_PROMPTS',
-    'QUESTION_TEMPLATES'
+    'QUESTION_TEMPLATES',
+
+    # V3 Unified Engine
+    'UnifiedRAGEngine',
+    'UnifiedRAGConfig',
+    'QueryMode',
+    'QueryComplexity',
+    'UnifiedResponse',
+    'UnifiedCitation',
+    'QueryRouter',
+    'StandardEngine',
+    'DeepResearchEngine',
+    'ExternalEngine',
 ]

@@ -31,6 +31,29 @@ from .conflicts import (
     ConflictType,
 )
 
+# V3 Enhanced Synthesis
+from .enhanced_engine import (
+    EnhancedSynthesisEngine,
+    EnhancedSynthesisResult,
+    add_enrichment_to_engine,
+    create_enhanced_engine_from_env,
+)
+
+from .research_enricher import (
+    ResearchEnricher,
+    EnrichmentConfig,
+    EnrichmentResult,
+    KnowledgeGap,
+    GapType,
+    GapPriority,
+    ExternalSource,
+    ExternalSearchResult,
+    GapAnalyzer,
+    PerplexityProvider,
+    GeminiGroundingProvider,
+    create_enricher_from_env,
+)
+
 __all__ = [
     # Synthesis Engine
     "SynthesisEngine",
@@ -56,4 +79,22 @@ __all__ = [
     # Template Constants
     "TEMPLATE_SECTIONS",
     "TEMPLATE_REQUIREMENTS",
+    # V3 Enhanced Synthesis
+    "EnhancedSynthesisEngine",
+    "EnhancedSynthesisResult",
+    "add_enrichment_to_engine",
+    "create_enhanced_engine_from_env",
+    # V3 Research Enricher
+    "ResearchEnricher",
+    "EnrichmentConfig",
+    "EnrichmentResult",
+    "KnowledgeGap",
+    "GapType",
+    "GapPriority",
+    "ExternalSource",
+    "ExternalSearchResult",
+    "GapAnalyzer",
+    "PerplexityProvider",
+    "GeminiGroundingProvider",
+    "create_enricher_from_env",
 ]

@@ -185,7 +185,7 @@ async def get_synthesis_engine(container) -> SynthesisEngine:
         try:
             import google.generativeai as genai
             genai.configure(api_key=google_key)
-            verification_client = genai.GenerativeModel("gemini-1.5-pro")
+            verification_client = genai.GenerativeModel("gemini-2.5-pro")
             logger.info("Gemini verification client initialized")
         except ImportError:
             logger.warning("google-generativeai not installed, verification disabled")

@@ -68,7 +68,22 @@ from src.retrieval.reranker import (
     LLMReranker,
     EnsembleReranker,
     MedicalReranker,
-    create_reranker
+    DiversityReranker,
+    QualityReranker,
+    PipelineReranker,
+    create_reranker,
+    create_pipeline_reranker
+)
+
+# Query Expansion
+from src.retrieval.query_expansion import (
+    QueryExpander,
+    ExpandedQuery,
+    ExpansionMethod,
+    expand_query,
+    create_query_expander,
+    NEURO_ABBREVIATIONS,
+    CONCEPT_CUIS
 )
 
 __all__ = [
@@ -96,5 +111,18 @@ __all__ = [
     'LLMReranker',
     'EnsembleReranker',
     'MedicalReranker',
-    'create_reranker'
+    'DiversityReranker',
+    'QualityReranker',
+    'PipelineReranker',
+    'create_reranker',
+    'create_pipeline_reranker',
+
+    # Query Expansion
+    'QueryExpander',
+    'ExpandedQuery',
+    'ExpansionMethod',
+    'expand_query',
+    'create_query_expander',
+    'NEURO_ABBREVIATIONS',
+    'CONCEPT_CUIS'
 ]

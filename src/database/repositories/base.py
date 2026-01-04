@@ -22,7 +22,7 @@ T = TypeVar('T')
 # Whitelist of allowed ORDER BY columns for SQL injection prevention
 ALLOWED_ORDER_COLUMNS: Set[str] = {
     'created_at', 'updated_at', 'id', 'name', 'title',
-    'score', 'chunk_count', 'page_number', 'sequence_in_doc',
+    'score', 'chunk_count', 'page_number', 'chunk_index',
     'ingested_at', 'occurrence_count', 'file_name'
 }
 
@@ -38,7 +38,7 @@ ALLOWED_UPDATE_COLUMNS: Set[str] = {
     'title', 'content', 'status', 'score', 'embedding',
     'metadata', 'caption', 'vlm_caption', 'is_decorative',
     'authority_score', 'chunk_type', 'image_type', 'processed',
-    'specialty_relevance', 'topic_tags', 'entity_mentions'
+    'specialty', 'cuis', 'entities'
 }
 
 # Whitelist of allowed condition columns for find_by() SQL injection prevention

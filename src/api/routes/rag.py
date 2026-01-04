@@ -209,7 +209,12 @@ async def ask_question_stream(
         
         return StreamingResponse(
             generate(),
-            media_type="text/event-stream"
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable Nginx buffering for SSE
+            }
         )
         
     except Exception as e:

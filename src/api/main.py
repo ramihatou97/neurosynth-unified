@@ -39,7 +39,10 @@ from src.api.routes import (
     synthesis_router,
     ingest_router,
     entities_router,
-    indexes_router
+    indexes_router,
+    # V3 Routes
+    rag_v3_router,
+    synthesis_v3_router,
 )
 from src.api.routes.images import router as images_router
 from src.api.routes.knowledge_graph import router as knowledge_graph_router
@@ -164,6 +167,10 @@ Currently open access. Production deployments should add authentication.
     app.include_router(knowledge_graph_router)  # Knowledge graph endpoints
     app.include_router(registry_router)  # Authority registry API
     app.include_router(chat_router, prefix="/api/v1")  # Enhanced chat with synthesis linking
+
+    # V3 Routes - Enhanced RAG and Synthesis with web research
+    app.include_router(rag_v3_router)  # /api/rag/v3/* - Unified RAG with tri-modal processing
+    app.include_router(synthesis_v3_router)  # /api/synthesis/v3/* - Enhanced synthesis with enrichment
     
     # Exception handlers
     @app.exception_handler(RequestValidationError)

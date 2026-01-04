@@ -457,8 +457,8 @@ class SearchService:
 
         where_clause = " AND ".join(conditions)
 
-        # Query using schema-aligned column names (v4.0)
-        # Columns: page_number, cuis, entity_mentions, specialty
+        # Query using schema-aligned column names (v4.1)
+        # Schema columns: page_number, cuis, entities, specialty
         query = f"""
             SELECT
                 c.id,
@@ -467,13 +467,11 @@ class SearchService:
                 c.page_number,
                 c.chunk_type,
                 c.cuis,
-                c.entity_mentions,
+                c.entities,
                 c.specialty,
+                c.embedding,
                 d.title AS document_title,
-                COALESCE(d.authority_score, 1.0) AS authority_score,
-                COALESCE(c.readability_score, 0.0) AS readability_score,
-                COALESCE(c.coherence_score, 0.0) AS coherence_score,
-                COALESCE(c.completeness_score, 0.0) AS completeness_score
+                COALESCE(d.authority_score, 1.0) AS authority_score
             FROM chunks c
             JOIN documents d ON c.document_id = d.id
             WHERE {where_clause}
@@ -484,14 +482,19 @@ class SearchService:
         results = []
         for row in rows:
             row_id = str(row['id'])
-            # Extract entity names from entity_mentions JSONB
-            entity_mentions = row.get('entity_mentions', {}) or {}
+            # Extract entity names from entities JSONB (schema column name)
+            entities_data = row.get('entities', []) or []
             entity_names = []
-            if isinstance(entity_mentions, dict):
+            if isinstance(entities_data, dict):
                 # Extract entity text values from JSONB structure
-                entity_names = list(entity_mentions.keys()) if entity_mentions else []
-            elif isinstance(entity_mentions, list):
-                entity_names = [str(e) for e in entity_mentions]
+                entity_names = list(entities_data.keys()) if entities_data else []
+            elif isinstance(entities_data, list):
+                # List of entity objects - extract names
+                for e in entities_data:
+                    if isinstance(e, dict) and 'name' in e:
+                        entity_names.append(e['name'])
+                    elif isinstance(e, str):
+                        entity_names.append(e)
 
             # Parse chunk_type string to ChunkType enum
             chunk_type = ChunkType.GENERAL
@@ -504,25 +507,35 @@ class SearchService:
 
             # ADAPTED: Populate SearchResult using actual schema fields
             # Now includes quality scores for synthesis filtering
+            # Parse embedding from pgvector format if present
+            embedding = None
+            raw_embedding = row.get('embedding')
+            if raw_embedding is not None:
+                if isinstance(raw_embedding, (list, tuple)):
+                    embedding = np.array(raw_embedding, dtype=np.float32)
+                elif hasattr(raw_embedding, 'tolist'):
+                    embedding = np.array(raw_embedding.tolist(), dtype=np.float32)
+
             results.append(SearchResult(
                 chunk_id=row_id,
                 document_id=str(row['document_id']),
                 content=row['content'],
                 title='',  # No title in current schema
                 chunk_type=chunk_type,
-                page_start=row.get('page_number', 0),  # Aliased from start_page
-                entity_names=entity_names,  # Extracted from entity_mentions JSONB
+                page_start=row.get('page_number', 0),
+                entity_names=entity_names,  # Extracted from entities JSONB
                 image_ids=[],  # Not stored in chunks table
-                cuis=row.get('cuis', []) or [],  # Aliased from topic_tags
+                cuis=row.get('cuis', []) or [],
                 authority_score=float(row['authority_score']),
                 keyword_score=0.0,
                 semantic_score=0.0,  # Set from FAISS scores later
                 final_score=0.0,  # Computed from weighted scores
                 document_title=row.get('document_title'),
                 images=[],  # Populated by _attach_linked_images()
-                readability_score=float(row.get('readability_score', 0.0)),
-                coherence_score=float(row.get('coherence_score', 0.0)),
-                completeness_score=float(row.get('completeness_score', 0.0)),
+                readability_score=0.0,  # Not in DB schema, use default
+                coherence_score=0.0,    # Not in DB schema, use default
+                completeness_score=0.0, # Not in DB schema, use default
+                embedding=embedding,
             ))
 
         return results
@@ -760,8 +773,8 @@ class SearchService:
         if not chunk_ids:
             return results
 
-        # Query using schema-aligned column names (v4.0)
-        # Table: links, Columns: score, file_path
+        # Query using schema-aligned column names (v4.1)
+        # Includes caption_embedding for semantic figure matching
         query = """
             SELECT
                 l.chunk_id,
@@ -770,11 +783,13 @@ class SearchService:
                 i.document_id,
                 i.file_path,
                 i.caption,
-                i.caption AS vlm_caption,
+                i.vlm_caption,
+                i.caption_embedding,
                 i.image_type,
                 i.width,
                 i.height,
-                i.format
+                i.format,
+                i.quality_score
             FROM links l
             JOIN images i ON l.image_id = i.id
             WHERE l.chunk_id = ANY($1) AND l.score >= 0.5
@@ -790,23 +805,32 @@ class SearchService:
             if chunk_id not in images_by_chunk:
                 images_by_chunk[chunk_id] = []
 
-            # ADAPTED: Create ExtractedImage with available fields
             # Strip output/images/ prefix from storage_path for frontend compatibility
             file_path_str = row['file_path'] or ''
             if file_path_str.startswith('output/images/'):
                 file_path_str = file_path_str[len('output/images/'):]
 
+            # Parse caption_embedding from pgvector for semantic figure matching
+            caption_embedding = None
+            raw_caption_emb = row.get('caption_embedding')
+            if raw_caption_emb is not None:
+                if isinstance(raw_caption_emb, (list, tuple)):
+                    caption_embedding = np.array(raw_caption_emb, dtype=np.float32)
+                elif hasattr(raw_caption_emb, 'tolist'):
+                    caption_embedding = np.array(raw_caption_emb.tolist(), dtype=np.float32)
+
             img_obj = ExtractedImage(
                 id=str(row['id']),
                 document_id=str(row['document_id']),
-                file_path=Path(file_path_str),  # Aliased from storage_path, prefix stripped
-                page_number=0,  # page_id is UUID, not page number
+                file_path=Path(file_path_str),
+                page_number=0,
                 width=row.get('width') or 0,
                 height=row.get('height') or 0,
                 format=row.get('format') or 'JPEG',
-                content_hash='',  # Not in schema
+                content_hash='',
                 caption=row.get('caption') or '',
                 vlm_caption=row.get('vlm_caption') or '',
+                caption_embedding=caption_embedding,
                 image_type=row.get('image_type') or 'unknown',
                 quality_score=row.get('quality_score') or 0.0
             )
@@ -1074,7 +1098,7 @@ class PostgresVectorSearcher:
         where_clause = " AND ".join(conditions)
 
         # pgvector cosine distance: <=> returns distance, so similarity = 1 - distance
-        # Schema-aligned columns (v4.0): page_number, cuis
+        # Schema-aligned columns (v4.1): page_number, cuis, entities
         query = f"""
             SELECT
                 c.id AS chunk_id,
@@ -1083,7 +1107,7 @@ class PostgresVectorSearcher:
                 c.page_number,
                 c.chunk_type,
                 c.cuis,
-                c.entity_mentions,
+                c.entities,
                 d.title AS document_title,
                 COALESCE(d.authority_score, 1.0) AS authority_score,
                 1 - (c.embedding <=> $1::vector) AS similarity_score
@@ -1100,12 +1124,16 @@ class PostgresVectorSearcher:
 
         results = []
         for row in rows:
-            entity_mentions = row.get('entity_mentions', {}) or {}
+            entities_data = row.get('entities', []) or []
             entity_names = []
-            if isinstance(entity_mentions, dict):
-                entity_names = list(entity_mentions.keys())
-            elif isinstance(entity_mentions, list):
-                entity_names = [str(e) for e in entity_mentions]
+            if isinstance(entities_data, dict):
+                entity_names = list(entities_data.keys())
+            elif isinstance(entities_data, list):
+                for e in entities_data:
+                    if isinstance(e, dict) and 'name' in e:
+                        entity_names.append(e['name'])
+                    elif isinstance(e, str):
+                        entity_names.append(e)
 
             chunk_type = ChunkType.GENERAL
             if row.get('chunk_type'):
@@ -1265,6 +1293,7 @@ class PostgresVectorSearcher:
         # Attach linked images
         chunk_ids = [UUID(r.chunk_id) for r in chunk_results]
 
+        # Query with caption_embedding for semantic figure matching
         link_query = """
             SELECT
                 l.chunk_id,
@@ -1273,10 +1302,13 @@ class PostgresVectorSearcher:
                 i.document_id,
                 i.file_path,
                 i.caption,
+                i.vlm_caption,
+                i.caption_embedding,
                 i.image_type,
                 i.width,
                 i.height,
-                i.format
+                i.format,
+                i.quality_score
             FROM links l
             JOIN images i ON l.image_id = i.id
             WHERE l.chunk_id = ANY($1)
@@ -1298,6 +1330,15 @@ class PostgresVectorSearcher:
             if file_path_str.startswith('output/images/'):
                 file_path_str = file_path_str[len('output/images/'):]
 
+            # Parse caption_embedding from pgvector for semantic figure matching
+            caption_embedding = None
+            raw_caption_emb = row.get('caption_embedding')
+            if raw_caption_emb is not None:
+                if isinstance(raw_caption_emb, (list, tuple)):
+                    caption_embedding = np.array(raw_caption_emb, dtype=np.float32)
+                elif hasattr(raw_caption_emb, 'tolist'):
+                    caption_embedding = np.array(raw_caption_emb.tolist(), dtype=np.float32)
+
             if len(images_by_chunk[chunk_id]) < 3:  # Max 3 images per chunk
                 images_by_chunk[chunk_id].append(ExtractedImage(
                     id=str(row['id']),
@@ -1309,9 +1350,10 @@ class PostgresVectorSearcher:
                     format=row.get('format') or 'JPEG',
                     content_hash='',
                     caption=row.get('caption') or '',
-                    vlm_caption=row.get('caption') or '',
+                    vlm_caption=row.get('vlm_caption') or '',
+                    caption_embedding=caption_embedding,
                     image_type=row.get('image_type') or 'unknown',
-                    quality_score=float(row.get('score', 0.0))
+                    quality_score=float(row.get('quality_score') or 0.0)
                 ))
 
         # Attach images to results

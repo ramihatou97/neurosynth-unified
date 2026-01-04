@@ -1,24 +1,116 @@
 """
-Chunk Quality Scoring Module for NeuroSynth.
+NeuroSynth v2.2 - Chunk Quality Scoring Module
+==============================================
 
-Computes readability, coherence, and completeness scores for semantic chunks
-to improve synthesis output quality.
+Computes readability, coherence, completeness, and type-specific scores
+for semantic chunks to improve synthesis output quality.
+
+v2.2 Enhancements:
+- 4-dimension scoring (readability, coherence, completeness, type-specific)
+- Orphan detection with penalty scoring
+- Type-specific requirement validation
 """
 
 import re
+import logging
 from dataclasses import dataclass, field
-from typing import List, Set, Optional, TYPE_CHECKING
+from typing import List, Set, Optional, Dict, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.shared.models import SemanticChunk, ChunkType
 
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# ORPHAN DETECTION PATTERNS (v2.2)
+# =============================================================================
+
+ORPHAN_PATTERNS = [
+    re.compile(r"^Step\s+[2-9]", re.I),
+    re.compile(r"^[2-9]\.\s+(?=[A-Z])", re.I),
+    re.compile(r"^(Then|Next|Subsequently|After\s+this)\b", re.I),
+    re.compile(r"^(Second|Third|Fourth|Fifth|Sixth)\b", re.I),
+]
+
+
+# =============================================================================
+# CONTENT ELEMENT PATTERNS (v2.2)
+# =============================================================================
+
+ELEMENT_PATTERNS = {
+    'action': [
+        re.compile(r'\b(incise|dissect|retract|expose|coagulate|clip|remove|resect)\b', re.I),
+        re.compile(r'\b(open|close|cut|suture|place|insert|advance)\b', re.I),
+    ],
+    'anatomy': [
+        re.compile(r'\b(nerve|artery|vein|muscle|bone|dura|cortex|cistern)\b', re.I),
+        re.compile(r'\b(lateral|medial|superior|inferior|anterior|posterior)\b', re.I),
+    ],
+    'rationale': [
+        re.compile(r'\b(to avoid|to prevent|in order to|this allows|this prevents)\b', re.I),
+        re.compile(r'\b(because|since|therefore|thus)\b', re.I),
+    ],
+    'instrument': [
+        re.compile(r'\b(microscope|bipolar|suction|dissector|retractor|forceps|drill)\b', re.I),
+        re.compile(r'\b(Penfield|Kerrison|Bovie|Malis)\b', re.I),
+    ],
+    'spatial': [
+        re.compile(r'\b(lateral to|medial to|above|below|anterior to|posterior to)\b', re.I),
+        re.compile(r'\b(adjacent to|superficial to|deep to|parallel to)\b', re.I),
+    ],
+    'structure': [
+        re.compile(r'\b(origin|insertion|course|termination|branches)\b', re.I),
+        re.compile(r'\b(forms|gives rise to|divides into|anastomoses)\b', re.I),
+    ],
+    'function': [
+        re.compile(r'\b(innervates|supplies|drains|controls|modulates)\b', re.I),
+        re.compile(r'\b(function|role|purpose)\b', re.I),
+    ],
+    'pathology': [
+        re.compile(r'\b(tumor|lesion|mass|cyst|hemorrhage|infarct)\b', re.I),
+        re.compile(r'\b(grade|WHO|malignant|benign|aggressive)\b', re.I),
+    ],
+    'clinical': [
+        re.compile(r'\b(symptom|sign|deficit|presentation|outcome)\b', re.I),
+        re.compile(r'\b(patient|prognosis|survival|recurrence)\b', re.I),
+    ],
+    'grading': [
+        re.compile(r'\b(Grade\s+[IVX\d]+|WHO\s+[IVX\d]+)\b', re.I),
+        re.compile(r'\b(Spetzler|Hunt.Hess|Fisher|WFNS)\b', re.I),
+    ],
+}
+
+
+# =============================================================================
+# TYPE REQUIREMENTS (v2.2)
+# =============================================================================
+
+TYPE_REQUIREMENTS: Dict[str, List[str]] = {
+    'procedure': ['action', 'anatomy', 'rationale', 'instrument'],
+    'anatomy': ['anatomy', 'spatial', 'structure', 'function'],
+    'pathology': ['pathology', 'clinical', 'grading'],
+    'clinical': ['clinical', 'pathology'],
+    'case': ['clinical', 'pathology'],
+    'general': [],
+}
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
 @dataclass
 class QualityConfig:
-    """Configuration for chunk quality scoring."""
-    readability_weight: float = 0.25
-    coherence_weight: float = 0.40
+    """Configuration for chunk quality scoring (v2.2)."""
+    # Dimension weights (now 4 dimensions)
+    readability_weight: float = 0.20
+    coherence_weight: float = 0.25
     completeness_weight: float = 0.35
+    type_specific_weight: float = 0.20
+
+    # Orphan penalty (v2.2)
+    orphan_penalty: float = -0.20
 
     # Readability parameters
     optimal_sentence_length_min: int = 15
@@ -368,32 +460,106 @@ class ChunkQualityScorer:
             # General/case/unknown - moderate baseline
             return 0.7
 
+    def compute_type_specific(self, chunk: "SemanticChunk") -> float:
+        """
+        Compute type-specific score based on required elements (v2.2).
+
+        Args:
+            chunk: SemanticChunk to evaluate
+
+        Returns:
+            Score from 0.0 to 1.0
+        """
+        content = chunk.content if hasattr(chunk, 'content') else ''
+        chunk_type = getattr(chunk, 'chunk_type', None)
+        type_name = chunk_type.value if hasattr(chunk_type, 'value') else str(chunk_type)
+
+        requirements = TYPE_REQUIREMENTS.get(type_name.lower(), [])
+
+        if not requirements:
+            return 0.8  # No specific requirements
+
+        elements_found = self._detect_elements(content)
+
+        met_count = sum(1 for req in requirements if req in elements_found)
+
+        if len(requirements) > 0:
+            ratio = met_count / len(requirements)
+            return 0.4 + 0.6 * ratio
+
+        return 0.8
+
+    def _detect_elements(self, content: str) -> List[str]:
+        """Detect which content elements are present (v2.2)."""
+        found = []
+        for element_type, patterns in ELEMENT_PATTERNS.items():
+            for pattern in patterns:
+                if pattern.search(content):
+                    found.append(element_type)
+                    break
+        return found
+
+    def _is_orphan(self, content: str) -> bool:
+        """Check if chunk starts with orphan indicators (v2.2)."""
+        content_start = content[:100].strip()
+        return any(p.search(content_start) for p in ORPHAN_PATTERNS)
+
     def score_chunk(self, chunk: "SemanticChunk") -> "SemanticChunk":
         """
-        Apply all quality scores to a chunk.
+        Apply all quality scores to a chunk (v2.2 - 4 dimensions + orphan penalty).
 
         Modifies chunk in place and returns it.
         """
         chunk.readability_score = self.compute_readability(chunk)
         chunk.coherence_score = self.compute_coherence(chunk)
         chunk.completeness_score = self.compute_completeness(chunk)
+
+        # v2.2: Compute and store type-specific score
+        type_specific_score = self.compute_type_specific(chunk)
+        if hasattr(chunk, 'type_specific_score'):
+            chunk.type_specific_score = type_specific_score
+
+        # v2.2: Check for orphan and store status
+        content = chunk.content if hasattr(chunk, 'content') else ''
+        is_orphan = self._is_orphan(content)
+        if hasattr(chunk, 'is_orphan'):
+            chunk.is_orphan = is_orphan
+
+        # Note: quality_score is now a computed property on SemanticChunk
+        # that applies orphan penalty automatically
+
         return chunk
 
-    def get_aggregate_score(self, chunk: "SemanticChunk") -> float:
+    def get_aggregate_score(
+        self,
+        chunk: "SemanticChunk",
+        type_specific_score: Optional[float] = None
+    ) -> float:
         """
-        Get weighted aggregate quality score.
+        Get weighted aggregate quality score (v2.2 - 4 dimensions).
         """
+        if type_specific_score is None:
+            type_specific_score = self.compute_type_specific(chunk)
+
         return (
             chunk.readability_score * self.config.readability_weight +
             chunk.coherence_score * self.config.coherence_weight +
-            chunk.completeness_score * self.config.completeness_weight
+            chunk.completeness_score * self.config.completeness_weight +
+            type_specific_score * self.config.type_specific_weight
         )
 
     def is_quality_acceptable(self, chunk: "SemanticChunk") -> bool:
         """
-        Check if chunk meets minimum quality threshold.
+        Check if chunk meets minimum quality threshold (v2.2).
         """
-        return self.get_aggregate_score(chunk) >= self.config.min_quality_threshold
+        content = chunk.content if hasattr(chunk, 'content') else ''
+        aggregate = self.get_aggregate_score(chunk)
+
+        # Apply orphan penalty if applicable
+        if self._is_orphan(content):
+            aggregate += self.config.orphan_penalty
+
+        return aggregate >= self.config.min_quality_threshold
 
 
 # Singleton instance for convenience

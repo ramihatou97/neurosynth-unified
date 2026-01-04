@@ -422,6 +422,7 @@ class SemanticChunk:
     readability_score: float = 0.0
     coherence_score: float = 0.0
     completeness_score: float = 0.0
+    type_specific_score: float = 0.0  # v2.2: Fourth quality dimension
     embedding_model: Optional[str] = None
     embedding_dim: Optional[int] = None
     cuis: List[str] = field(default_factory=list)
@@ -432,6 +433,96 @@ class SemanticChunk:
     db_id: Optional[UUID] = None
     contextual_content: Optional[str] = None
     created_at: Optional[datetime] = None
+
+    # ==========================================================================
+    # v2.2 Enhanced Metadata Fields
+    # ==========================================================================
+
+    # Procedural metadata
+    surgical_phase: Optional[str] = None
+    """Phase of surgical procedure (positioning, exposure, approach, etc.)"""
+
+    step_number: Optional[int] = None
+    """Explicit step number if present in content (e.g., Step 3)"""
+
+    step_sequence: Optional[str] = None
+    """Position in sequence (e.g., '3_of_8' for ordering during synthesis)"""
+
+    # High-value content flags
+    has_pitfall: bool = False
+    """Contains surgical pitfall, pearl, or critical warning"""
+
+    has_teaching_point: bool = False
+    """Contains explicit teaching point or key concept"""
+
+    has_key_measurement: bool = False
+    """Contains critical measurements (distances, angles, etc.)"""
+
+    # Pathology-specific metadata
+    grading_scale: Optional[str] = None
+    """Grading scale used (e.g., 'spetzler_martin', 'who', 'hunt_hess')"""
+
+    grade_value: Optional[str] = None
+    """Specific grade if mentioned (e.g., 'III', '4')"""
+
+    molecular_markers: List[str] = field(default_factory=list)
+    """Molecular markers mentioned (IDH, MGMT, 1p/19q, etc.)"""
+
+    # Anatomy-specific metadata
+    anatomical_region: Optional[str] = None
+    """Broad anatomical region (skull_base, spine, vascular, etc.)"""
+
+    spatial_relationships: List[str] = field(default_factory=list)
+    """Key spatial relationships mentioned (e.g., 'lateral_to:optic_nerve')"""
+
+    has_variation: bool = False
+    """Describes anatomical variation"""
+
+    # Clinical-specific metadata
+    has_decision_point: bool = False
+    """Contains clinical decision point or algorithm branch"""
+
+    has_evidence_citation: bool = False
+    """Contains reference to study or evidence"""
+
+    # v2.2 Orphan status
+    is_orphan: bool = False
+    """Chunk appears to be mid-sequence (starts with Step 2+, Then, etc.)"""
+
+    # Imaging-specific metadata
+    imaging_modality: Optional[str] = None
+    """Primary imaging modality discussed (MRI, CT, etc.)"""
+
+    imaging_sequences: List[str] = field(default_factory=list)
+    """Specific sequences mentioned (T1, T2, FLAIR, etc.)"""
+
+    # ==========================================================================
+    # v2.2 Computed Properties
+    # ==========================================================================
+
+    @property
+    def quality_score(self) -> float:
+        """Weighted aggregate quality score (v2.2: 4 dimensions + orphan penalty)."""
+        base_score = (
+            self.readability_score * 0.20 +
+            self.coherence_score * 0.25 +
+            self.completeness_score * 0.35 +
+            self.type_specific_score * 0.20
+        )
+        # Apply orphan penalty (v2.2)
+        if self.is_orphan:
+            base_score = max(0.0, base_score - 0.20)
+        return base_score
+
+    @property
+    def is_high_value(self) -> bool:
+        """Check if chunk contains high-value content."""
+        return self.has_pitfall or self.has_teaching_point or self.has_key_measurement
+
+    @property
+    def has_step_context(self) -> bool:
+        """Check if chunk has procedural step information."""
+        return self.step_number is not None or self.surgical_phase is not None
 
     @classmethod
     def create(
@@ -850,6 +941,8 @@ class SearchResult:
     readability_score: float = 0.0
     coherence_score: float = 0.0
     completeness_score: float = 0.0
+    # Embedding vector for MMR diversity reranking
+    embedding: Optional[np.ndarray] = None
 
     @property
     def quality_score(self) -> float:

@@ -14,6 +14,10 @@ from src.api.routes.ingest import router as ingest_router
 from src.api.routes.entities import router as entities_router
 from src.api.routes.indexes import router as indexes_router
 
+# V3 Routes
+from src.api.routes.rag_v3 import router as rag_v3_router
+from src.api.routes.synthesis_v3 import router as synthesis_v3_router
+
 __all__ = [
     'search_router',
     'rag_router',
@@ -22,5 +26,8 @@ __all__ = [
     'synthesis_router',
     'ingest_router',
     'entities_router',
-    'indexes_router'
+    'indexes_router',
+    # V3 Routes
+    'rag_v3_router',
+    'synthesis_v3_router',
 ]

@@ -61,7 +61,7 @@ def _validate_url(value: str) -> bool:
 
 def _validate_api_key(value: str) -> bool:
     """Validate API key format (non-empty, reasonable length)."""
-    return len(value) >= 10 and len(value) <= 200
+    return len(value) >= 10 and len(value) <= 500  # Extended for longer session keys
 
 
 def _validate_positive_int(value: str) -> bool:
@@ -585,32 +585,54 @@ async def get_faiss_manager(
 # =============================================================================
 
 class ConversationStore:
-    """Simple in-memory conversation store."""
-    
+    """Thread-safe in-memory conversation store with LRU eviction."""
+
     _instance: Optional['ConversationStore'] = None
-    
+    _instance_lock: Optional['asyncio.Lock'] = None
+
     def __init__(self, max_conversations: int = 1000):
         self._conversations: dict = {}
         self._max = max_conversations
-    
+        self._lock = asyncio.Lock()  # Thread safety for dict operations
+
     @classmethod
     def get_instance(cls) -> 'ConversationStore':
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
     def get(self, conversation_id: str):
+        """Get conversation (read-only, no lock needed for dict.get)."""
         return self._conversations.get(conversation_id)
-    
+
+    async def set_async(self, conversation_id: str, conversation):
+        """Thread-safe set with LRU eviction (async version)."""
+        async with self._lock:
+            if len(self._conversations) >= self._max:
+                oldest = next(iter(self._conversations))
+                del self._conversations[oldest]
+            self._conversations[conversation_id] = conversation
+
     def set(self, conversation_id: str, conversation):
+        """Sync set (for backward compatibility - use set_async when possible)."""
         # Simple LRU: remove oldest if at capacity
         if len(self._conversations) >= self._max:
             oldest = next(iter(self._conversations))
             del self._conversations[oldest]
         self._conversations[conversation_id] = conversation
-    
+
+    async def delete_async(self, conversation_id: str):
+        """Thread-safe delete (async version)."""
+        async with self._lock:
+            self._conversations.pop(conversation_id, None)
+
     def delete(self, conversation_id: str):
+        """Sync delete (for backward compatibility)."""
         self._conversations.pop(conversation_id, None)
+
+    def list_all(self) -> list:
+        """List all conversations (returns list to avoid mutation during iteration)."""
+        return list(self._conversations.values())
 
 
 def get_conversation_store() -> ConversationStore:

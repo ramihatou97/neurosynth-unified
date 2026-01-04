@@ -36,8 +36,8 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
 
     @property
     def updatable_columns(self) -> Set[str]:
-        return {'content', 'summary', 'content_hash', 'chunk_type',
-                'specialty_relevance', 'entity_mentions',
+        return {'content', 'content_hash', 'chunk_type',
+                'specialty', 'entities',
                 'embedding', 'metadata'}
 
     def _to_entity(self, row: dict) -> Dict[str, Any]:
@@ -47,18 +47,17 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             'document_id': row['document_id'],
             'content': row['content'],
             'content_hash': row.get('content_hash'),
-            'summary': row.get('summary'),  # Pre-computed human-readable summary
             'page_number': row.get('page_number'),
-            'chunk_index': row.get('sequence_in_doc'),
-            'start_char': row.get('char_offset_start'),
-            'end_char': row.get('char_offset_end'),
+            'chunk_index': row.get('chunk_index'),
+            'start_char': row.get('start_char'),
+            'end_char': row.get('end_char'),
             'chunk_type': row.get('chunk_type'),
             'specialty': row.get('specialty', {}),
             'embedding': row.get('embedding'),
             'cuis': row.get('cuis', []),
-            'entities': row.get('entity_mentions', []),
+            'entities': row.get('entities', []),
             'created_at': row.get('created_at'),
-            'metadata': {},
+            'metadata': row.get('metadata', {}),
             # Search result fields
             'similarity': row.get('similarity'),
             'cui_overlap': row.get('cui_overlap'),
@@ -77,12 +76,12 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             elif isinstance(embedding, list):
                 embedding = DatabaseConnection._encode_vector(embedding)
 
-        # Handle JSON fields - DB column is entity_mentions
-        entities = entity.get('entities') or entity.get('entity_mentions', [])
+        # Handle JSON fields - DB column is entities (v4.1 schema)
+        entities = entity.get('entities', [])
         if isinstance(entities, list):
             entities = json.dumps(entities)
 
-        # DB column is specialty (v4.0 schema)
+        # DB column is specialty (v4.1 schema)
         specialty = entity.get('specialty') or entity.get('specialty_relevance', {})
         if isinstance(specialty, dict):
             specialty = json.dumps(specialty)
@@ -93,13 +92,13 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             'content': entity['content'],
             'content_hash': entity.get('content_hash'),
             'page_number': entity.get('page_number') or entity.get('start_page'),
-            'sequence_in_doc': entity.get('chunk_index') or entity.get('sequence_in_doc'),
-            'char_offset_start': entity.get('start_char') or entity.get('char_offset_start'),
-            'char_offset_end': entity.get('end_char') or entity.get('char_offset_end'),
+            'chunk_index': entity.get('chunk_index') or entity.get('sequence_in_doc'),
+            'start_char': entity.get('start_char') or entity.get('char_offset_start'),
+            'end_char': entity.get('end_char') or entity.get('char_offset_end'),
             'chunk_type': entity.get('chunk_type'),
             'specialty': specialty,
             'embedding': embedding,
-            'entity_mentions': entities,
+            'entities': entities,
             'cuis': entity.get('cuis', [])
         }
     
@@ -170,24 +169,18 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 chunk.get('chunk_type'),
                 chunk.get('specialty') or chunk.get('specialty_relevance'),
                 embedding,
-                entities,  # entity_mentions
-                chunk.get('summary'),  # Pre-computed summary
-                cuis or [],  # UMLS CUIs
-                chunk.get('readability_score', 0.0),  # Quality scores
-                chunk.get('coherence_score', 0.0),
-                chunk.get('completeness_score', 0.0)
+                cuis or [],
+                entities,
             ))
 
         async with self.db.transaction() as conn:
             await conn.executemany("""
                 INSERT INTO chunks (
                     id, document_id, content,
-                    page_number, sequence_in_doc, char_offset_start, char_offset_end,
-                    chunk_type, specialty, embedding, entity_mentions, summary, cuis,
-                    readability_score, coherence_score, completeness_score
+                    page_number, chunk_index, start_char, end_char,
+                    chunk_type, specialty, embedding, cuis, entities
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11::jsonb, $12, $13,
-                    $14, $15, $16
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11, $12::jsonb
                 )
             """, records)
         
@@ -216,8 +209,8 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             offset: Skip results (for pagination)
         """
         columns = """
-            id, document_id, content, COALESCE(page_number, page_start, start_page) as page_number, sequence_in_doc,
-            chunk_type, specialty, entity_mentions, summary, cuis
+            id, document_id, content, page_number, chunk_index,
+            chunk_type, specialty, entities, cuis, metadata
         """
         if include_embedding:
             columns += ", embedding"
@@ -238,7 +231,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT {columns}
                 FROM chunks
                 WHERE document_id = $1 AND page_number = $2
-                ORDER BY sequence_in_doc
+                ORDER BY chunk_index
                 {pagination}
             """
         else:
@@ -246,7 +239,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT {columns}
                 FROM chunks
                 WHERE document_id = $1
-                ORDER BY page_number, sequence_in_doc
+                ORDER BY page_number, chunk_index
                 {pagination}
             """
 
@@ -289,7 +282,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 SELECT id, document_id, content, page_number, chunk_type, specialty, cuis
                 FROM chunks
                 WHERE chunk_type = $1 AND document_id = $2
-                ORDER BY page_number, sequence_in_doc
+                ORDER BY page_number, chunk_index
                 LIMIT $3
             """
             rows = await self.db.fetch(query, chunk_type, document_id, limit)
