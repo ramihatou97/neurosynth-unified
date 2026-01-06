@@ -216,6 +216,14 @@ Currently open access. Production deployments should add authentication.
     app.include_router(learning_router)  # /api/v1/learning/* - Cards, Mastery, CSPs
     app.include_router(learning_extended_router)  # /api/v1/learning/* - Extended flashcard generation, Socratic
 
+    # FRCSC Enhancement Routes - Question bank, exam simulation, adaptive testing
+    try:
+        from src.learning.nprss.frcsc_routes import router as frcsc_router
+        app.include_router(frcsc_router, prefix="/api/v1/frcsc", tags=["FRCSC"])  # /api/v1/frcsc/*
+        logger.info("✓ FRCSC enhancement routes registered")
+    except ImportError as e:
+        logger.warning(f"FRCSC routes not loaded: {e}")
+
     # NeuroSynth 2.0 Reasoning Routes - Surgical simulation and risk assessment
     try:
         from src.neurosynth2.api.routes.reasoning import router as ns2_router

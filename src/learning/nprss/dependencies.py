@@ -50,6 +50,11 @@ from .socratic.engine import SocraticEngine
 # FSRS
 from .fsrs import FSRS
 
+# FRCSC Enhancement Services
+from .services.fsrs_enhanced import FSRSEnhanced, FSRSConfig
+from .services.question_bank import QuestionBankService
+from .services.exam_simulation import ExamSimulationService
+
 
 # =============================================================================
 # DATABASE CONNECTION
@@ -403,6 +408,231 @@ async def get_chunk_repository():
 
 
 # =============================================================================
+# FRCSC ENHANCEMENT DEPENDENCIES
+# =============================================================================
+
+async def get_question_bank_service():
+    """
+    Get QuestionBankService for IRT-based adaptive questioning.
+
+    Provides:
+    - Adaptive question selection based on user ability
+    - IRT parameter tracking
+    - Category performance analytics
+    """
+    pool = get_db_pool()
+
+    async with pool.acquire() as conn:
+        # Create a simple repository wrapper for the service
+        class FRCSCRepository:
+            def __init__(self, conn):
+                self.conn = conn
+
+            async def get_questions(self, category=None, exclude_ids=None):
+                """Get available questions from database."""
+                query = """
+                    SELECT
+                        id, question_code, category_id, stem, options, answer,
+                        explanation, format, yield_rating, cognitive_level,
+                        difficulty_param, discrimination_param, guessing_param,
+                        year_asked, key_points
+                    FROM frcsc_questions
+                    WHERE ($1::UUID IS NULL OR category_id = $1)
+                    AND ($2::UUID[] IS NULL OR id != ALL($2))
+                    ORDER BY yield_rating DESC, difficulty_param
+                """
+                rows = await self.conn.fetch(query, category, exclude_ids or [])
+                # Convert to Question objects (simplified)
+                return rows
+
+            async def get_question(self, question_id):
+                """Get single question by ID."""
+                query = """
+                    SELECT
+                        id, question_code, category_id, stem, options, answer,
+                        explanation, format, yield_rating, cognitive_level,
+                        difficulty_param, discrimination_param, guessing_param,
+                        year_asked, key_points
+                    FROM frcsc_questions
+                    WHERE id = $1
+                """
+                return await self.conn.fetchrow(query, question_id)
+
+            async def record_attempt(self, user_id, question_id, user_answer,
+                                   is_correct, time_spent, ability_estimate):
+                """Record question attempt."""
+                query = """
+                    INSERT INTO frcsc_question_attempts
+                    (user_id, question_id, user_answer, is_correct,
+                     time_spent_seconds, ability_estimate)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    RETURNING id
+                """
+                return await self.conn.fetchrow(
+                    query, user_id, question_id, user_answer,
+                    is_correct, time_spent, ability_estimate
+                )
+
+            async def get_user_attempts(self, user_id, limit=100):
+                """Get user's attempt history."""
+                query = """
+                    SELECT
+                        question_id, user_answer, is_correct,
+                        time_spent_seconds, ability_estimate, attempted_at
+                    FROM frcsc_question_attempts
+                    WHERE user_id = $1
+                    ORDER BY attempted_at DESC
+                    LIMIT $2
+                """
+                return await self.conn.fetch(query, user_id, limit)
+
+            async def get_all_questions(self):
+                """Get all questions for exam simulation."""
+                query = """
+                    SELECT
+                        id, question_code, category_id, stem, options, answer,
+                        explanation, format, yield_rating, cognitive_level,
+                        difficulty_param, discrimination_param, guessing_param,
+                        year_asked, key_points
+                    FROM frcsc_questions
+                    ORDER BY RANDOM()
+                """
+                return await self.conn.fetch(query)
+
+        repo = FRCSCRepository(conn)
+        service = QuestionBankService(repository=repo)
+        yield service
+
+
+async def get_exam_service():
+    """
+    Get ExamSimulationService for FRCSC exam practice.
+
+    Provides:
+    - Timed exam simulations (written, oral, mock)
+    - Performance analytics
+    - Pass probability prediction
+    """
+    pool = get_db_pool()
+    question_bank = None
+
+    # Get question bank service for exam question selection
+    async for qb in get_question_bank_service():
+        question_bank = qb
+        break
+
+    async with pool.acquire() as conn:
+        # Create repository wrapper
+        class ExamRepository:
+            def __init__(self, conn):
+                self.conn = conn
+
+            async def create_exam_session(self, session):
+                """Create new exam session."""
+                query = """
+                    INSERT INTO exam_simulations
+                    (id, user_id, exam_type, status, started_at,
+                     time_limit_minutes, total_questions, question_ids)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """
+                import json
+                await self.conn.execute(
+                    query,
+                    session.id, session.user_id, session.exam_type.value,
+                    session.status.value, session.started_at,
+                    session.time_limit_minutes, len(session.questions),
+                    json.dumps([str(q.question_id) for q in session.questions])
+                )
+
+            async def save_exam_result(self, result):
+                """Save exam results."""
+                query = """
+                    UPDATE exam_simulations
+                    SET status = 'completed',
+                        completed_at = NOW(),
+                        correct_answers = $1,
+                        score_percentage = $2,
+                        passed = $3,
+                        category_scores = $4
+                    WHERE id = $5
+                """
+                import json
+                await self.conn.execute(
+                    query,
+                    result.correct_answers, result.score_percentage,
+                    result.passed, json.dumps(result.category_scores),
+                    result.exam_id
+                )
+
+            async def get_exam_history(self, user_id, limit=10):
+                """Get user's exam history."""
+                query = """
+                    SELECT
+                        id, exam_type, score_percentage, passed,
+                        started_at, completed_at, category_scores
+                    FROM exam_simulations
+                    WHERE user_id = $1 AND status = 'completed'
+                    ORDER BY completed_at DESC
+                    LIMIT $2
+                """
+                rows = await self.conn.fetch(query, user_id, limit)
+                return [dict(row) for row in rows]
+
+            async def get_category_performance(self, user_id):
+                """Get performance by category."""
+                query = """
+                    SELECT
+                        q.category_id::text as category,
+                        COUNT(*) as total,
+                        SUM(CASE WHEN a.is_correct THEN 1 ELSE 0 END) as correct
+                    FROM frcsc_question_attempts a
+                    JOIN frcsc_questions q ON a.question_id = q.id
+                    WHERE a.user_id = $1
+                    GROUP BY q.category_id
+                """
+                rows = await self.conn.fetch(query, user_id)
+                result = {}
+                for row in rows:
+                    result[row['category']] = {
+                        'total': row['total'],
+                        'correct': row['correct'],
+                        'accuracy': row['correct'] / row['total'] if row['total'] > 0 else 0
+                    }
+                return result
+
+            async def update_exam_status(self, exam_id, status):
+                """Update exam status."""
+                from .services.exam_simulation import ExamStatus
+                query = "UPDATE exam_simulations SET status = $1 WHERE id = $2"
+                await self.conn.execute(query, status.value, exam_id)
+
+        repo = ExamRepository(conn)
+        service = ExamSimulationService(repository=repo, question_bank=question_bank)
+        yield service
+
+
+@lru_cache()
+def get_fsrs_enhanced() -> FSRSEnhanced:
+    """
+    Get cached FSRSEnhanced algorithm instance.
+
+    Provides dual-track FSRS with exam-aware scheduling.
+    """
+    from .config import get_nprss_settings
+    settings = get_nprss_settings()
+
+    config = FSRSConfig(
+        exam_date=None,  # Will be set per-user
+        retention_targets={
+            'factual': 0.90,
+            'procedural': 0.92,
+            'csp': 0.95
+        }
+    )
+    return FSRSEnhanced(config=config)
+
+
+# =============================================================================
 # INITIALIZATION HELPER
 # =============================================================================
 
@@ -441,5 +671,6 @@ def initialize_nprss_dependencies(
 
     # Warm up cached instances
     get_fsrs_algorithm()
+    get_fsrs_enhanced()
 
     print("NPRSS dependencies initialized successfully")
