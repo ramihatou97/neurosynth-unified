@@ -43,12 +43,16 @@ from src.api.routes import (
     # V3 Routes
     rag_v3_router,
     synthesis_v3_router,
+    # NPRSS Learning Routes
+    learning_router,
+    learning_extended_router,
 )
 from src.api.routes.images import router as images_router
 from src.api.routes.knowledge_graph import router as knowledge_graph_router
 from src.api.routes.registry import router as registry_router, load_registry_from_db
 from src.chat.routes import router as chat_router
 from src.library.routes import router as library_router
+from src.library.procedure_routes import router as procedure_router, init_procedure_routes
 
 # Configure logging
 logging.basicConfig(
@@ -97,6 +101,35 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Authority registry loaded")
     except Exception as e:
         logger.warning(f"Authority registry not loaded: {e}. Using defaults.")
+
+    # Initialize NPRSS learning dependencies
+    try:
+        from src.learning.nprss.dependencies import initialize_nprss_dependencies
+        initialize_nprss_dependencies(
+            db_pool=container.database,
+            rag_engine=container.rag_engine if hasattr(container, 'rag_engine') else None,
+            llm_client=None  # Will use default Anthropic client
+        )
+        logger.info("✓ NPRSS learning dependencies initialized")
+    except Exception as e:
+        logger.warning(f"NPRSS initialization failed (learning features unavailable): {e}")
+
+    # Initialize NeuroSynth 2.0 surgical reasoning dependencies
+    try:
+        from src.neurosynth2.dependencies import initialize_ns2_dependencies
+        initialize_ns2_dependencies(db_pool=container.database)
+        logger.info("✓ NeuroSynth 2.0 initialized")
+    except ImportError:
+        pass  # Module not installed
+    except Exception as e:
+        logger.warning(f"NeuroSynth 2.0 initialization failed (reasoning features unavailable): {e}")
+
+    # Initialize procedure-centric library routes
+    try:
+        init_procedure_routes(container.database)
+        logger.info("✓ Procedure library routes initialized")
+    except Exception as e:
+        logger.warning(f"Procedure routes initialization failed: {e}")
 
     yield
     
@@ -175,7 +208,22 @@ Currently open access. Production deployments should add authentication.
 
     # Library Scanner - PDF metadata extraction and selective ingestion
     app.include_router(library_router, prefix="/api/v1")  # /api/v1/library/*
-    
+
+    # Procedure-Centric Library - "Flight Plan" for surgical preparation
+    app.include_router(procedure_router, prefix="/api/v1")  # /api/v1/procedures/*
+
+    # NPRSS Learning Routes - Procedural learning with FSRS and Socratic mode
+    app.include_router(learning_router)  # /api/v1/learning/* - Cards, Mastery, CSPs
+    app.include_router(learning_extended_router)  # /api/v1/learning/* - Extended flashcard generation, Socratic
+
+    # NeuroSynth 2.0 Reasoning Routes - Surgical simulation and risk assessment
+    try:
+        from src.neurosynth2.api.routes.reasoning import router as ns2_router
+        app.include_router(ns2_router)  # /api/v1/reasoning/* - Simulation, Risk Assessment
+        logger.info("✓ NeuroSynth 2.0 routes registered")
+    except ImportError:
+        pass  # Module not installed
+
     # Exception handlers
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(

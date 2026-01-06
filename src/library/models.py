@@ -128,11 +128,15 @@ class DocumentSummary(BaseModel):
     document_type: str
     primary_specialty: str
     specialties: List[str]
+    subspecialties: List[str] = Field(default_factory=list)  # Nested under primary_specialty
+    evidence_level: Optional[str] = None  # Ia, Ib, IIa, IIb, III, IV (for journal articles)
     authority_source: str
     authority_score: float
     has_images: bool
     image_count_estimate: int
     is_ingested: bool = False
+    is_new: bool = False  # True if discovered in most recent scan
+    first_seen_date: Optional[str] = None  # Date document was first discovered
 
     class Config:
         json_schema_extra = {
@@ -146,6 +150,8 @@ class DocumentSummary(BaseModel):
                 "document_type": "atlas",
                 "primary_specialty": "skull_base",
                 "specialties": ["skull_base", "neuroanatomy"],
+                "subspecialties": ["microsurgical_anatomy", "surgical_approaches"],
+                "evidence_level": None,
                 "authority_source": "RHOTON",
                 "authority_score": 1.0,
                 "has_images": True,
@@ -212,6 +218,9 @@ class LibraryStatistics(BaseModel):
     total_chapters: int
     ingested_count: int = 0
     not_ingested_count: int = 0
+    new_count: int = 0  # Documents discovered in most recent scan
+    scanned_count: int = 0  # Files actually scanned (not cached)
+    cached_count: int = 0  # Files reused from previous scan
     by_specialty: Dict[str, int]
     by_type: Dict[str, int]
     by_authority: Dict[str, int]
@@ -221,8 +230,10 @@ class LibraryStatistics(BaseModel):
 class FilterOptions(BaseModel):
     """Available filter options for the UI."""
     specialties: List[str]
+    subspecialties: Dict[str, List[str]] = Field(default_factory=dict)  # specialty -> subspecialties
     document_types: List[str]
     authority_sources: List[str]
+    evidence_levels: List[str] = Field(default_factory=list)  # Ia, Ib, IIa, IIb, III, IV
 
 
 # =============================================================================
@@ -239,8 +250,10 @@ class DocumentSearchRequest(BaseModel):
     """Document search/filter request."""
     query: Optional[str] = Field(None, description="Full-text search")
     specialty: Optional[str] = Field(None, description="Filter by specialty")
+    subspecialty: Optional[str] = Field(None, description="Filter by subspecialty")
     document_type: Optional[str] = Field(None, description="Filter by document type")
     authority_source: Optional[str] = Field(None, description="Filter by authority")
+    evidence_level: Optional[str] = Field(None, description="Filter by evidence level (Ia, Ib, IIa, IIb, III, IV)")
     min_authority_score: float = Field(0.0, ge=0.0, le=1.0)
     has_images: Optional[bool] = None
     is_ingested: Optional[bool] = None
@@ -314,6 +327,9 @@ class ScanCompleteUpdate(BaseModel):
     total_documents: int
     total_pages: int
     total_chapters: int
+    new_documents: int = 0  # Newly discovered documents
+    scanned_count: int = 0  # Files actually scanned
+    cached_count: int = 0  # Files reused from cache
     scan_date: str
 
 

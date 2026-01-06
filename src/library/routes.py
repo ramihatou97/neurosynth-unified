@@ -15,10 +15,26 @@ from pathlib import Path
 from typing import Optional, List
 from uuid import uuid4
 
-from fastapi import APIRouter, Query, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends
 from fastapi.responses import JSONResponse
 
 from .scanner import LibraryScanner, LibraryCatalog, ReferenceDocument
+
+
+# =============================================================================
+# Database Dependency
+# =============================================================================
+
+async def get_db_pool():
+    """Get database pool from ServiceContainer."""
+    try:
+        from src.api.dependencies import get_container
+        container = await get_container()
+        if not container or not container.database:
+            return None
+        return container.database.pool
+    except Exception:
+        return None
 from .models import (
     ScanRequest,
     ScanStatusResponse,
@@ -63,6 +79,7 @@ class LibraryState:
         self._scan_error: Optional[str] = None
         self._active_websockets: List[WebSocket] = []
         self._catalog_path: str = "./data/library_catalog.json"
+        self._auto_loaded: bool = False
 
     @property
     def catalog(self) -> Optional[LibraryCatalog]:
@@ -85,6 +102,24 @@ class LibraryState:
             error=self._scan_error,
         )
 
+    def ensure_catalog_loaded(self) -> bool:
+        """Auto-load catalog from disk if not already loaded. Returns True if catalog exists."""
+        if self._catalog is not None:
+            return True
+        if self._auto_loaded:
+            return False  # Already tried, file doesn't exist
+
+        self._auto_loaded = True
+        catalog_file = Path(self._catalog_path)
+        if catalog_file.exists():
+            try:
+                self._catalog = LibraryCatalog.from_json(str(catalog_file))
+                logger.info(f"Auto-loaded library catalog: {self._catalog.total_documents} documents")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to auto-load catalog: {e}")
+        return False
+
 
 # Global state instance
 _state = LibraryState()
@@ -106,11 +141,15 @@ def _doc_to_summary(doc: ReferenceDocument) -> DocumentSummary:
         document_type=doc.document_type.value,
         primary_specialty=doc.primary_specialty.value,
         specialties=doc.specialties,
+        subspecialties=getattr(doc, 'subspecialties', []),
+        evidence_level=getattr(doc, 'evidence_level', None),
         authority_source=doc.authority_source,
         authority_score=doc.authority_score,
         has_images=doc.has_images,
         image_count_estimate=doc.image_count_estimate,
         is_ingested=doc.is_ingested,
+        is_new=getattr(doc, 'is_new', False),
+        first_seen_date=getattr(doc, 'first_seen_date', None),
     )
 
 
@@ -146,6 +185,8 @@ def _doc_to_detail(doc: ReferenceDocument) -> DocumentDetail:
         document_type=doc.document_type.value,
         primary_specialty=doc.primary_specialty.value,
         specialties=doc.specialties,
+        subspecialties=getattr(doc, 'subspecialties', []),
+        evidence_level=getattr(doc, 'evidence_level', None),
         authority_source=doc.authority_source,
         authority_score=doc.authority_score,
         has_images=doc.has_images,
@@ -297,10 +338,26 @@ async def _run_scan_task(library_path: str, recursive: bool):
                 "percent_complete": (current / total * 100) if total > 0 else 0,
             }))
 
+        # Pass previous catalog for incremental scanning
+        previous_catalog = _state._catalog if _state._catalog and _state._catalog.documents else None
+
         catalog = await scanner.scan_library(
             recursive=recursive,
             progress_callback=progress_callback,
+            previous_catalog=previous_catalog,  # Enable incremental scanning
+            incremental=True,  # Skip unchanged files
         )
+
+        # Merge with previous catalog to detect new documents
+        new_count = 0
+        if previous_catalog:
+            new_count = catalog.merge_with_previous(previous_catalog)
+            logger.info(f"Detected {new_count} new documents since last scan")
+
+        # Extract scan statistics
+        scan_stats = getattr(catalog, 'scan_stats', {})
+        scanned_count = scan_stats.get('scanned_count', catalog.total_documents)
+        cached_count = scan_stats.get('cached_count', 0)
 
         # Save catalog
         _state._catalog = catalog
@@ -310,16 +367,22 @@ async def _run_scan_task(library_path: str, recursive: bool):
         Path("./data").mkdir(exist_ok=True)
         catalog.to_json(_state._catalog_path)
 
-        # Broadcast completion
+        # Broadcast completion with scan stats
         await _broadcast_to_websockets({
             "type": "scan_complete",
             "total_documents": catalog.total_documents,
             "total_pages": catalog.total_pages,
             "total_chapters": catalog.total_chapters,
+            "new_documents": new_count,
+            "scanned_count": scanned_count,
+            "cached_count": cached_count,
             "scan_date": catalog.scan_date,
         })
 
-        logger.info(f"Library scan complete: {catalog.total_documents} documents")
+        if cached_count > 0:
+            logger.info(f"Library scan complete: {catalog.total_documents} documents ({scanned_count} scanned, {cached_count} cached), {new_count} new")
+        else:
+            logger.info(f"Library scan complete: {catalog.total_documents} documents, {new_count} new")
 
     except Exception as e:
         _state._scan_status = ScanStatus.FAILED
@@ -340,11 +403,14 @@ async def _run_scan_task(library_path: str, recursive: bool):
 async def list_documents(
     query: Optional[str] = Query(None, description="Search in titles, chapters"),
     specialty: Optional[str] = Query(None, description="Filter by specialty"),
+    subspecialty: Optional[str] = Query(None, description="Filter by subspecialty"),
     document_type: Optional[str] = Query(None, description="Filter by document type"),
     authority_source: Optional[str] = Query(None, description="Filter by authority"),
+    evidence_level: Optional[str] = Query(None, description="Filter by evidence level (Ia, Ib, IIa, IIb, III, IV)"),
     min_authority: float = Query(0.0, ge=0.0, le=1.0),
     has_images: Optional[bool] = Query(None),
     is_ingested: Optional[bool] = Query(None),
+    is_new: Optional[bool] = Query(None, description="Filter by new documents only"),
     min_pages: int = Query(0, ge=0),
     max_pages: int = Query(999999, ge=0),
     offset: int = Query(0, ge=0),
@@ -353,20 +419,24 @@ async def list_documents(
     """
     List and search documents in the library catalog.
 
-    Supports filtering by specialty, document type, authority source,
-    and text search in titles/chapter names.
+    Supports filtering by specialty, subspecialty, document type, authority source,
+    evidence level, and text search in titles/chapter names.
     """
-    if _state._catalog is None:
-        raise HTTPException(400, "No catalog loaded. Run /scan first or load from file.")
+    # Auto-load catalog if exists, otherwise return empty list
+    if not _state.ensure_catalog_loaded():
+        return DocumentListResponse(total=0, offset=offset, limit=limit, documents=[])
 
     results = _state._catalog.search(
         query=query,
         specialty=specialty,
+        subspecialty=subspecialty,
         document_type=document_type,
         authority_source=authority_source,
+        evidence_level=evidence_level,
         min_authority_score=min_authority,
         has_images=has_images,
         is_ingested=is_ingested,
+        is_new=is_new,
         min_pages=min_pages,
         max_pages=max_pages,
     )
@@ -507,8 +577,22 @@ async def search_chapters(
 @router.get("/statistics", response_model=LibraryStatistics)
 async def get_statistics():
     """Get catalog statistics for dashboard display."""
-    if _state._catalog is None:
-        raise HTTPException(400, "No catalog loaded. Run /scan first.")
+    # Auto-load or return empty stats
+    if not _state.ensure_catalog_loaded():
+        return LibraryStatistics(
+            total_documents=0,
+            total_pages=0,
+            total_chapters=0,
+            ingested_count=0,
+            not_ingested_count=0,
+            new_count=0,
+            scanned_count=0,
+            cached_count=0,
+            by_specialty={},
+            by_type={},
+            by_authority={},
+            scan_date=None,
+        )
 
     stats = _state._catalog.get_statistics()
     return LibraryStatistics(**stats)
@@ -517,13 +601,13 @@ async def get_statistics():
 @router.get("/filters", response_model=FilterOptions)
 async def get_filter_options():
     """Get available filter options for UI dropdowns."""
-    if _state._catalog is None:
-        # Return defaults
+    # Auto-load or return defaults
+    if not _state.ensure_catalog_loaded():
         from .scanner import Specialty, DocumentType
         return FilterOptions(
             specialties=[s.value for s in Specialty],
             document_types=[d.value for d in DocumentType],
-            authority_sources=list(_state._catalog._by_authority.keys()) if _state._catalog else [],
+            authority_sources=[],
         )
 
     options = _state._catalog.get_filter_options()
@@ -637,3 +721,647 @@ async def sync_ingested_status():
     except Exception as e:
         logger.error(f"Failed to sync ingested status: {e}")
         raise HTTPException(500, f"Failed to sync: {e}")
+
+
+# =============================================================================
+# Book Hierarchy & Tree API
+# =============================================================================
+
+@router.get("/tree")
+async def get_library_tree(
+    specialty: Optional[str] = None,
+    include_standalone: bool = True,
+):
+    """
+    Get documents organized in book→chapter hierarchy.
+
+    Returns:
+        Tree structure with books containing chapters, plus standalone documents.
+        Books are flattened: {id, title, chapters: [...]} instead of {book: {...}, chapters: [...]}
+    """
+    if not _state.ensure_catalog_loaded():
+        raise HTTPException(400, "No catalog available. Run scan first.")
+
+    hierarchy = _state._catalog.get_book_hierarchy()
+
+    # Flatten book structure: move book properties to root level
+    flattened_books = []
+    for book_data in hierarchy.get('books', []):
+        book = book_data.get('book', {})
+        chapters = book_data.get('chapters', [])
+        # Merge book properties with chapters at root level
+        flattened_book = {**book, 'chapters': chapters}
+        flattened_books.append(flattened_book)
+
+    hierarchy['books'] = flattened_books
+
+    # Filter by specialty if specified
+    if specialty:
+        specialty_lower = specialty.lower()
+        filtered_books = []
+        for book in hierarchy['books']:
+            if specialty_lower in [s.lower() for s in book.get('specialties', [])]:
+                filtered_books.append(book)
+        hierarchy['books'] = filtered_books
+        hierarchy['total_books'] = len(filtered_books)
+
+        if include_standalone:
+            filtered_standalone = [
+                d for d in hierarchy['standalone']
+                if specialty_lower in [s.lower() for s in d.get('specialties', [])]
+            ]
+            hierarchy['standalone'] = filtered_standalone
+            hierarchy['total_standalone'] = len(filtered_standalone)
+
+    if not include_standalone:
+        hierarchy['standalone'] = []
+        hierarchy['total_standalone'] = 0
+
+    return hierarchy
+
+
+@router.get("/hierarchy/{doc_id}")
+async def get_document_hierarchy(doc_id: str):
+    """
+    Get the full hierarchy for a specific document.
+
+    For a chapter: returns parent book and siblings.
+    For a book: returns all children.
+    """
+    if not _state.ensure_catalog_loaded():
+        raise HTTPException(400, "No catalog available. Run scan first.")
+
+    doc = _state._catalog.get_document(doc_id)
+    if not doc:
+        raise HTTPException(404, f"Document {doc_id} not found")
+
+    result = {
+        "document": doc.to_dict(),
+        "parent": None,
+        "siblings": [],
+        "children": [],
+    }
+
+    # If document has a parent, find parent and siblings
+    if doc.parent_id:
+        parent = _state._catalog.get_document(doc.parent_id)
+        if parent:
+            result["parent"] = parent.to_dict()
+
+            # Find siblings (same parent, excluding self)
+            for d in _state._catalog.documents:
+                if d.parent_id == doc.parent_id and d.id != doc_id:
+                    result["siblings"].append({
+                        "id": d.id,
+                        "title": d.title,
+                        "sort_order": d.sort_order,
+                    })
+
+            result["siblings"].sort(key=lambda s: s["sort_order"])
+
+    # If document is a book, find children
+    if doc.section_type == "book":
+        for d in _state._catalog.documents:
+            if d.parent_id == doc_id:
+                result["children"].append({
+                    "id": d.id,
+                    "title": d.title,
+                    "sort_order": d.sort_order,
+                    "page_count": d.page_count,
+                })
+        result["children"].sort(key=lambda c: c["sort_order"])
+
+    return result
+
+
+# =============================================================================
+# Specialty Hierarchy API
+# =============================================================================
+
+@router.get("/specialties/tree")
+async def get_specialty_tree():
+    """
+    Get hierarchical specialty taxonomy.
+
+    Returns specialty→subspecialty→sub-subspecialty tree structure.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise Exception("Database pool not available")
+        async with pool.acquire() as conn:
+            # Fetch all specialties
+            rows = await conn.fetch("""
+                SELECT id, name, parent_id, level, keywords, icon, description, sort_order
+                FROM specialties
+                WHERE is_active = true
+                ORDER BY level, sort_order, name
+            """)
+
+            # Build tree structure
+            specialties_by_id = {}
+            root_specialties = []
+
+            for row in rows:
+                spec = {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "parent_id": row["parent_id"],
+                    "level": row["level"],
+                    "keywords": row["keywords"] or [],
+                    "icon": row["icon"],
+                    "description": row["description"],
+                    "children": [],
+                }
+                specialties_by_id[row["id"]] = spec
+
+                if row["parent_id"] is None:
+                    root_specialties.append(spec)
+
+            # Link children to parents
+            for spec in specialties_by_id.values():
+                if spec["parent_id"] and spec["parent_id"] in specialties_by_id:
+                    specialties_by_id[spec["parent_id"]]["children"].append(spec)
+
+            return {
+                "specialties": root_specialties,
+                "total": len(rows),
+            }
+
+    except Exception as e:
+        logger.warning(f"Failed to load specialty tree from DB: {e}")
+        # Fallback to hardcoded enum values
+        from .scanner import Specialty
+        return {
+            "specialties": [
+                {"id": i, "name": s.value, "parent_id": None, "level": 1, "children": []}
+                for i, s in enumerate(Specialty)
+            ],
+            "total": len(Specialty),
+            "source": "enum_fallback",
+        }
+
+
+@router.get("/specialties/{specialty_id}/documents")
+async def get_documents_by_specialty(
+    specialty_id: int,
+    include_children: bool = True,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Get documents belonging to a specialty.
+
+    Args:
+        specialty_id: ID of the specialty
+        include_children: Include documents from subspecialties (default: True)
+        limit: Max documents to return
+        offset: Pagination offset
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise Exception("Database pool not available")
+        async with pool.acquire() as conn:
+            if include_children:
+                # Get specialty and all descendants
+                spec_ids = await conn.fetch("""
+                    SELECT specialty_id FROM get_specialty_with_descendants($1)
+                """, specialty_id)
+                spec_id_list = [r["specialty_id"] for r in spec_ids]
+            else:
+                spec_id_list = [specialty_id]
+
+            # Fetch documents
+            rows = await conn.fetch("""
+                SELECT DISTINCT d.id, d.title, d.file_path,
+                       ds.relevance_score, ds.is_primary
+                FROM documents d
+                JOIN document_specialties ds ON d.id = ds.document_id
+                WHERE ds.specialty_id = ANY($1)
+                ORDER BY ds.is_primary DESC, ds.relevance_score DESC
+                LIMIT $2 OFFSET $3
+            """, spec_id_list, limit, offset)
+
+            # Get total count
+            count_row = await conn.fetchrow("""
+                SELECT COUNT(DISTINCT d.id) as total
+                FROM documents d
+                JOIN document_specialties ds ON d.id = ds.document_id
+                WHERE ds.specialty_id = ANY($1)
+            """, spec_id_list)
+
+            return {
+                "documents": [dict(row) for row in rows],
+                "total": count_row["total"],
+                "specialty_ids": spec_id_list,
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to get documents by specialty: {e}")
+        raise HTTPException(500, f"Database error: {e}")
+
+
+# =============================================================================
+# Entity Search API
+# =============================================================================
+
+@router.get("/entities/search")
+async def search_entities(
+    q: str = Query(..., min_length=2, description="Search query"),
+    entity_type: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+):
+    """
+    Search entities with autocomplete support.
+
+    Uses trigram similarity for fuzzy matching.
+
+    Args:
+        q: Search query (minimum 2 characters)
+        entity_type: Filter by entity type (anatomy, procedure, pathology)
+        limit: Max results to return
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise Exception("Database pool not available")
+        async with pool.acquire() as conn:
+            # Enable trigram extension if not already
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+
+            # Search entities with similarity scoring
+            # Note: entities table uses 'category' not 'entity_type', and 'name' column
+            query = """
+                SELECT
+                    id,
+                    name,
+                    category,
+                    cui,
+                    semantic_type,
+                    similarity(name, $1) as score
+                FROM entities
+                WHERE name IS NOT NULL AND (
+                    name ILIKE $2
+                    OR name % $1
+                )
+            """
+            params = [q, f"%{q}%"]
+
+            if entity_type:
+                query += " AND category = $3"
+                params.append(entity_type)
+
+            query += " ORDER BY score DESC, name LIMIT $" + str(len(params) + 1)
+            params.append(limit)
+
+            rows = await conn.fetch(query, *params)
+
+            return {
+                "entities": [
+                    {
+                        "id": str(row["id"]),
+                        "name": row["name"],
+                        "type": row["category"] or row["semantic_type"] or "unknown",
+                        "cui": row["cui"],
+                        "score": float(row["score"]) if row["score"] else 0.0,
+                    }
+                    for row in rows
+                ],
+                "query": q,
+                "total": len(rows),
+            }
+
+    except Exception as e:
+        logger.error(f"Entity search failed: {e}")
+        # Fallback to in-memory search if DB fails
+        return {
+            "entities": [],
+            "query": q,
+            "total": 0,
+            "error": str(e),
+        }
+
+
+@router.get("/entities/{entity_id}/documents")
+async def get_documents_by_entity(
+    entity_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Get documents that mention a specific entity.
+
+    Uses the chunks.entities JSONB field to find documents.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise Exception("Database pool not available")
+        async with pool.acquire() as conn:
+            # Find chunks containing this entity and get their documents
+            rows = await conn.fetch("""
+                SELECT DISTINCT
+                    d.id,
+                    d.title,
+                    d.file_path,
+                    d.authority_score,
+                    COUNT(c.id) as mention_count
+                FROM documents d
+                JOIN chunks c ON c.document_id = d.id
+                WHERE c.entities @> $1::jsonb
+                   OR $2 = ANY(c.cuis)
+                GROUP BY d.id
+                ORDER BY mention_count DESC, d.authority_score DESC
+                LIMIT $3 OFFSET $4
+            """, f'[{{"id": "{entity_id}"}}]', entity_id, limit, offset)
+
+            return {
+                "documents": [dict(row) for row in rows],
+                "entity_id": entity_id,
+                "total": len(rows),
+            }
+
+    except Exception as e:
+        logger.error(f"Failed to get documents by entity: {e}")
+        raise HTTPException(500, f"Database error: {e}")
+
+
+# =============================================================================
+# Reading Lists API
+# =============================================================================
+
+from .reading_lists import (
+    ReadingListManager,
+    ReadingListCreate,
+    ReadingListUpdate,
+    ReadingListItemAdd,
+    ReadingListItemUpdate,
+)
+
+
+@router.get("/lists")
+async def get_reading_lists(
+    procedure_slug: Optional[str] = Query(None, description="Filter by linked procedure"),
+    specialty: Optional[str] = Query(None, description="Filter by specialty"),
+):
+    """
+    Get all reading lists, optionally filtered by procedure or specialty.
+
+    Returns lists with item counts, sorted by most recently updated.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        lists = await manager.get_lists(
+            procedure_slug=procedure_slug,
+            specialty=specialty,
+        )
+        return {"lists": lists, "total": len(lists)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get reading lists: {e}")
+        raise HTTPException(500, f"Failed to get reading lists: {e}")
+
+
+@router.post("/lists")
+async def create_reading_list(data: ReadingListCreate):
+    """
+    Create a new reading list.
+
+    Can optionally be linked to a procedure for case preparation context.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        new_list = await manager.create_list(data)
+        return new_list
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create reading list: {e}")
+        raise HTTPException(500, f"Failed to create reading list: {e}")
+
+
+@router.get("/lists/{list_id}")
+async def get_reading_list(list_id: str):
+    """
+    Get a reading list with all its items.
+
+    Items are returned in order with priority and notes.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        result = await manager.get_list_with_items(list_id)
+
+        if not result:
+            raise HTTPException(404, f"Reading list not found: {list_id}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get reading list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to get reading list: {e}")
+
+
+@router.patch("/lists/{list_id}")
+async def update_reading_list(list_id: str, data: ReadingListUpdate):
+    """
+    Update a reading list's metadata (name, description, etc.).
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        result = await manager.update_list(list_id, data)
+
+        if not result:
+            raise HTTPException(404, f"Reading list not found: {list_id}")
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update reading list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to update reading list: {e}")
+
+
+@router.delete("/lists/{list_id}")
+async def delete_reading_list(list_id: str):
+    """
+    Delete a reading list and all its items.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        deleted = await manager.delete_list(list_id)
+
+        if not deleted:
+            raise HTTPException(404, f"Reading list not found: {list_id}")
+
+        return {"status": "deleted", "id": list_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete reading list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to delete reading list: {e}")
+
+
+@router.post("/lists/{list_id}/items")
+async def add_item_to_list(list_id: str, data: ReadingListItemAdd):
+    """
+    Add a document to a reading list.
+
+    Priority levels:
+    - 1 = Essential (must read)
+    - 2 = Recommended (should read)
+    - 3 = Optional (nice to have)
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        added = await manager.add_item(list_id, data)
+
+        if not added:
+            raise HTTPException(409, "Document already in list")
+
+        return {"status": "added", "document_id": data.document_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to add item to list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to add item: {e}")
+
+
+@router.post("/lists/{list_id}/items/batch")
+async def add_items_batch(
+    list_id: str,
+    document_ids: List[str],
+    priority: int = Query(2, ge=1, le=3),
+):
+    """
+    Add multiple documents to a reading list at once.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        added_count = await manager.add_items_batch(list_id, document_ids, priority)
+
+        return {
+            "status": "added",
+            "added_count": added_count,
+            "requested_count": len(document_ids),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to add items batch to list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to add items: {e}")
+
+
+@router.patch("/lists/{list_id}/items/{document_id:path}")
+async def update_list_item(
+    list_id: str,
+    document_id: str,
+    data: ReadingListItemUpdate,
+):
+    """
+    Update an item's priority, notes, or position.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        updated = await manager.update_item(list_id, document_id, data)
+
+        if not updated:
+            raise HTTPException(404, "Item not found in list")
+
+        return {"status": "updated", "document_id": document_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update item in list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to update item: {e}")
+
+
+@router.delete("/lists/{list_id}/items/{document_id:path}")
+async def remove_item_from_list(list_id: str, document_id: str):
+    """
+    Remove a document from a reading list.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        removed = await manager.remove_item(list_id, document_id)
+
+        if not removed:
+            raise HTTPException(404, "Item not found in list")
+
+        return {"status": "removed", "document_id": document_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to remove item from list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to remove item: {e}")
+
+
+@router.put("/lists/{list_id}/reorder")
+async def reorder_list_items(list_id: str, document_ids: List[str]):
+    """
+    Reorder items in a reading list.
+
+    Pass the document IDs in the desired order.
+    """
+    try:
+        pool = await get_db_pool()
+        if not pool:
+            raise HTTPException(503, "Database not available")
+
+        manager = ReadingListManager(pool)
+        await manager.reorder_items(list_id, document_ids)
+
+        return {"status": "reordered", "list_id": list_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to reorder items in list {list_id}: {e}")
+        raise HTTPException(500, f"Failed to reorder items: {e}")

@@ -18,6 +18,10 @@ from src.api.routes.indexes import router as indexes_router
 from src.api.routes.rag_v3 import router as rag_v3_router
 from src.api.routes.synthesis_v3 import router as synthesis_v3_router
 
+# NPRSS Learning Routes
+from src.api.routes.learning import router as learning_router
+from src.api.routes.learning_extended import router as learning_extended_router
+
 __all__ = [
     'search_router',
     'rag_router',
@@ -30,4 +34,7 @@ __all__ = [
     # V3 Routes
     'rag_v3_router',
     'synthesis_v3_router',
+    # NPRSS Learning Routes
+    'learning_router',
+    'learning_extended_router',
 ]
