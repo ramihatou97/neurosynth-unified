@@ -97,18 +97,13 @@ from src.rag.prompts import (
     QUESTION_TEMPLATES
 )
 
-# V3 Unified RAG Engine
-from src.rag.unified_engine import (
+# V2 Unified RAG Engine (consolidated from V1+V2+V3)
+from src.rag.unified_rag_engine import (
     UnifiedRAGEngine,
-    UnifiedRAGConfig,
-    QueryMode,
+    SearchMode,
     QueryComplexity,
-    UnifiedResponse,
-    Citation as UnifiedCitation,
+    QueryAnalysis,
     QueryRouter,
-    StandardEngine,
-    DeepResearchEngine,
-    ExternalEngine,
 )
 
 __all__ = [
@@ -139,15 +134,10 @@ __all__ = [
     'SYSTEM_PROMPTS',
     'QUESTION_TEMPLATES',
 
-    # V3 Unified Engine
+    # V2 Unified Engine (consolidated)
     'UnifiedRAGEngine',
-    'UnifiedRAGConfig',
-    'QueryMode',
+    'SearchMode',
     'QueryComplexity',
-    'UnifiedResponse',
-    'UnifiedCitation',
+    'QueryAnalysis',
     'QueryRouter',
-    'StandardEngine',
-    'DeepResearchEngine',
-    'ExternalEngine',
 ]

@@ -639,9 +639,13 @@ class ConversationStore:
         """Sync delete (for backward compatibility)."""
         self._conversations.pop(conversation_id, None)
 
-    def list_all(self) -> list:
-        """List all conversations (returns list to avoid mutation during iteration)."""
-        return list(self._conversations.values())
+    def list_all(self) -> dict:
+        """List all conversations as dict {conversation_id: conversation_data}."""
+        return dict(self._conversations)
+
+    def clear_all(self):
+        """Clear all conversations."""
+        self._conversations.clear()
 
 
 def get_conversation_store() -> ConversationStore:

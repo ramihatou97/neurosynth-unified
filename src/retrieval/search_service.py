@@ -47,7 +47,11 @@ import time
 import numpy as np
 
 from src.retrieval.faiss_manager import FAISSManager
-from src.shared.models import SearchResult, ExtractedImage, ChunkType
+from src.shared.models import SearchResult, ExtractedImage, ChunkType, ImageType
+import asyncio
+
+# Import MMR for diverse result selection (prevents near-duplicate chunks)
+from src.shared.mmr import mmr_sort
 
 logger = logging.getLogger(__name__)
 
@@ -213,11 +217,12 @@ class SearchService:
         filters: SearchFilters = None,
         include_images: bool = True,
         include_similar: bool = False,
-        rerank: bool = True
+        rerank: bool = True,
+        mmr_lambda: float = None,
     ) -> SearchResponse:
         """
         Execute search.
-        
+
         Args:
             query: Search query text
             mode: Search mode (text, image, hybrid)
@@ -226,34 +231,90 @@ class SearchService:
             include_images: Include linked images in results
             include_similar: Include similar chunks
             rerank: Apply re-ranking
-        
+            mmr_lambda: MMR diversity parameter (0.0=pure diversity, 1.0=pure relevance).
+                       Default None disables MMR. Recommended: 0.7 for synthesis.
+
         Returns:
             SearchResponse with results
         """
         start_time = time.time()
         filters = filters or SearchFilters()
-        
+
         # Step 1: Get query embedding
         query_embedding = await self._embed_query(query)
-        
-        # Step 2: FAISS search for candidates
+
+        # Step 2: PARALLEL search for text and image candidates
+        # This implements the "Dual-Path" architecture for the Modality Gap fix
         faiss_start = time.time()
-        
-        if mode == "text":
-            candidates = await self._search_text_faiss(query_embedding, top_k, filters)
-        elif mode == "image":
-            candidates = await self._search_image_faiss(query_embedding, top_k, filters)
-        else:  # hybrid
-            candidates = await self._search_hybrid_faiss(query_embedding, top_k, filters)
-        
+
+        # Determine which searches to run
+        run_text_search = mode in ("text", "hybrid")
+        run_image_search = mode == "image" or (include_images and mode in ("text", "hybrid"))
+
+        # Build list of coroutines for parallel execution
+        search_tasks = []
+        task_labels = []
+
+        if run_text_search:
+            if mode == "hybrid":
+                search_tasks.append(self._search_hybrid_faiss(query_embedding, top_k, filters))
+            else:
+                search_tasks.append(self._search_text_faiss(query_embedding, top_k, filters))
+            task_labels.append("text")
+
+        if run_image_search:
+            # Image search via caption embeddings (text-to-image)
+            search_tasks.append(self._search_image_faiss(query_embedding, top_k // 2, filters))
+            task_labels.append("image")
+
+        # Execute searches in parallel
+        search_results = await asyncio.gather(*search_tasks)
+
+        # Parse results
+        text_candidates = []
+        image_candidates = []
+        for label, result in zip(task_labels, search_results):
+            if label == "text":
+                text_candidates = result
+            elif label == "image":
+                image_candidates = result
+
         faiss_time = int((time.time() - faiss_start) * 1000)
-        
-        # Step 3: Enrich with database (apply filters)
+
+        # Step 3: Enrich with database (PARALLEL for text + images)
         filter_start = time.time()
-        results = await self._enrich_results(candidates, filters, mode)
+
+        enrich_tasks = []
+        enrich_labels = []
+
+        if text_candidates:
+            enrich_tasks.append(self._enrich_results(text_candidates, filters, mode))
+            enrich_labels.append("text")
+
+        if image_candidates:
+            # Use "self-carrying" pattern: wrap images in SearchResult containers
+            enrich_tasks.append(self._fetch_images_as_search_results(image_candidates, filters))
+            enrich_labels.append("image")
+
+        enrich_results = await asyncio.gather(*enrich_tasks)
+
+        # Merge results from both paths
+        results = []
+        for label, enriched in zip(enrich_labels, enrich_results):
+            if label == "text":
+                results.extend(enriched)
+            elif label == "image":
+                # Add image results with slightly lower priority than text
+                results.extend(enriched)
+                if enriched:
+                    logger.info(f"Dual-Path: Added {len(enriched)} self-carrying images to results")
+
         filter_time = int((time.time() - filter_start) * 1000)
-        
-        total_candidates = len(candidates)
+
+        # Sort merged results by final_score
+        results.sort(key=lambda x: x.final_score, reverse=True)
+
+        total_candidates = len(text_candidates) + len(image_candidates)
         
         # Step 4: CUI boosting
         if filters.cuis:
@@ -273,10 +334,28 @@ class SearchService:
             rerank_start = time.time()
             results = await self._rerank_results(query, results)
             rerank_time = int((time.time() - rerank_start) * 1000)
-        
+
+        # Step 5b: MMR diversity re-ranking (prevents near-duplicate chunks)
+        # Only apply if mmr_lambda is set and we have embeddings
+        mmr_time = 0
+        if mmr_lambda is not None and len(results) > 1:
+            mmr_start = time.time()
+            results = self._apply_mmr(
+                query_embedding=query_embedding,
+                results=results,
+                top_k=top_k,
+                lambda_mult=mmr_lambda
+            )
+            mmr_time = int((time.time() - mmr_start) * 1000)
+            logger.debug(f"MMR reranking took {mmr_time}ms (λ={mmr_lambda})")
+
         # Step 6: Attach linked images
         if include_images and mode != "image":
             results = await self._attach_linked_images(results)
+            # Debug: count images attached
+            total_images = sum(len(r.images) for r in results)
+            if total_images > 0:
+                logger.info(f"Attached {total_images} images to {sum(1 for r in results if r.images)} chunks")
         
         # Step 7: Trim to top_k
         results = results[:top_k]
@@ -603,11 +682,152 @@ class SearchService:
             ))
         
         return results
-    
+
+    async def _fetch_images_as_search_results(
+        self,
+        image_candidates: List[Tuple[str, float]],
+        filters: SearchFilters
+    ) -> List[SearchResult]:
+        """
+        Fetch images and wrap in SearchResult containers ("self-carrying" pattern).
+
+        This enables the Decoupled Multi-Modal Retrieval Strategy where images
+        are retrieved independently and merged with text results. The image is
+        placed in .images so the synthesis engine automatically includes it.
+
+        Args:
+            image_candidates: List of (image_id, faiss_score) tuples from caption search
+            filters: Search filters to apply
+
+        Returns:
+            List of SearchResult with images embedded (for synthesis compatibility)
+        """
+        if not image_candidates:
+            return []
+
+        ids = [c[0] for c in image_candidates]
+        scores = {c[0]: c[1] for c in image_candidates}
+
+        conditions = ["i.id = ANY($1)", "NOT i.is_decorative"]
+        params = [ids]
+        param_idx = 2
+
+        if filters.document_ids:
+            conditions.append(f"i.document_id = ANY(${param_idx})")
+            params.append([UUID(d) for d in filters.document_ids])
+            param_idx += 1
+
+        if filters.image_types:
+            conditions.append(f"i.image_type = ANY(${param_idx})")
+            params.append(filters.image_types)
+            param_idx += 1
+
+        if filters.page_range:
+            conditions.append(f"i.page_number >= ${param_idx} AND i.page_number <= ${param_idx + 1}")
+            params.extend(filters.page_range)
+            param_idx += 2
+
+        where_clause = " AND ".join(conditions)
+
+        query = f"""
+            SELECT
+                i.id,
+                i.document_id,
+                COALESCE(NULLIF(i.storage_path, ''), i.file_path) AS file_path,
+                i.vlm_caption,
+                i.caption,
+                i.page_number,
+                i.image_type,
+                i.width,
+                i.height,
+                i.format,
+                i.quality_score,
+                i.caption_embedding,
+                d.title AS document_title,
+                COALESCE(d.authority_score, 1.0) AS authority_score
+            FROM images i
+            JOIN documents d ON i.document_id = d.id
+            WHERE {where_clause}
+        """
+
+        rows = await self.db.fetch(query, *params)
+
+        results = []
+        for row in rows:
+            img_id = str(row['id'])
+            faiss_score = scores.get(img_id, 0.0)
+
+            # Clean file path (remove storage prefix if present)
+            file_path_str = row['file_path'] or ''
+            if file_path_str.startswith('output/images/'):
+                file_path_str = file_path_str[len('output/images/'):]
+
+            # Parse caption_embedding from pgvector
+            caption_embedding = None
+            raw_caption_emb = row.get('caption_embedding')
+            if raw_caption_emb is not None:
+                if isinstance(raw_caption_emb, (list, tuple)):
+                    caption_embedding = np.array(raw_caption_emb, dtype=np.float32)
+                elif hasattr(raw_caption_emb, 'tolist'):
+                    caption_embedding = np.array(raw_caption_emb.tolist(), dtype=np.float32)
+
+            # Create the ExtractedImage object
+            img_type_str = row.get('image_type', 'unknown')
+            try:
+                img_type = ImageType(img_type_str)
+            except ValueError:
+                img_type = ImageType.UNKNOWN
+
+            img_obj = ExtractedImage(
+                id=img_id,
+                document_id=str(row['document_id']),
+                file_path=Path(file_path_str),
+                page_number=row.get('page_number', 0),
+                width=row.get('width', 0),
+                height=row.get('height', 0),
+                format=row.get('format', 'png'),
+                content_hash='',
+                image_type=img_type,
+                is_decorative=False,
+                quality_score=float(row.get('quality_score') or 0.0),
+                caption=row.get('caption'),
+                vlm_caption=row.get('vlm_caption'),
+                caption_embedding=caption_embedding,
+                cuis=[]  # CUIs are associated with chunks, not images directly
+            )
+
+            # Content is the rich VLM caption for context
+            content = row.get('vlm_caption') or row.get('caption') or "[Image]"
+
+            # Use virtual ID format to distinguish from text chunks
+            virtual_chunk_id = f"img_{img_id}"
+
+            # Create SearchResult container with image payload
+            results.append(SearchResult(
+                chunk_id=virtual_chunk_id,
+                document_id=str(row['document_id']),
+                content=content,
+                title="Figure",
+                chunk_type=ChunkType.GENERAL,
+                page_start=row.get('page_number', 0),
+                entity_names=[],
+                image_ids=[img_id],
+                cuis=[],  # CUIs are associated with chunks, not images directly
+                authority_score=float(row['authority_score']),
+                keyword_score=0.0,
+                semantic_score=faiss_score,
+                final_score=faiss_score * 0.9,  # Slight penalty vs text (prefer text answers)
+                document_title=row.get('document_title'),
+                images=[img_obj],  # The payload - makes this "self-carrying"
+            ))
+
+        logger.debug(f"Wrapped {len(results)} images as self-carrying SearchResults")
+        return results
+
     # =========================================================================
     # Scoring & Ranking
     # =========================================================================
-    
+
     def _apply_cui_boost(
         self,
         results: List[SearchResult],
@@ -744,13 +964,13 @@ class SearchService:
         """Re-rank results using cross-encoder."""
         if not self.reranker:
             return results
-        
+
         # Prepare pairs
         texts = [r.content for r in results]
-        
+
         # Get re-ranked scores
         scores = await self.reranker.score(query, texts)
-        
+
         # Update scores with reranking results
         for result, score in zip(results, scores):
             # FIXED: Update final_score to be weighted combination
@@ -760,6 +980,84 @@ class SearchService:
         # Re-sort by final_score
         results.sort(key=lambda x: x.final_score, reverse=True)
         return results
+
+    def _apply_mmr(
+        self,
+        query_embedding: np.ndarray,
+        results: List[SearchResult],
+        top_k: int,
+        lambda_mult: float = 0.7
+    ) -> List[SearchResult]:
+        """
+        Apply Maximal Marginal Relevance for diverse result selection.
+
+        MMR balances relevance to query with diversity among selected items,
+        preventing near-duplicate chunks from dominating synthesis context.
+
+        Formula: MMR = λ * Sim(doc, query) - (1-λ) * max(Sim(doc, selected))
+
+        Args:
+            query_embedding: Query vector
+            results: Current search results (already scored)
+            top_k: Number of results to return
+            lambda_mult: Diversity parameter (0.0=pure diversity, 1.0=pure relevance)
+                        Recommended: 0.7 for medical content (mostly relevant, slight diversity)
+
+        Returns:
+            Reordered results list with improved diversity
+        """
+        if len(results) <= 1:
+            return results
+
+        # Extract embeddings from results
+        # Results should have embeddings attached from fetch step
+        candidate_embeddings = []
+        valid_results = []
+        valid_indices = []
+
+        for i, result in enumerate(results):
+            # Check if result has embedding (from database fetch)
+            embedding = getattr(result, 'embedding', None)
+            if embedding is not None:
+                if isinstance(embedding, np.ndarray):
+                    candidate_embeddings.append(embedding.tolist())
+                elif isinstance(embedding, (list, tuple)):
+                    candidate_embeddings.append(list(embedding))
+                else:
+                    continue
+                valid_results.append(result)
+                valid_indices.append(i)
+
+        # If no embeddings available, return original order
+        if not candidate_embeddings:
+            logger.debug("MMR skipped: no embeddings available on results")
+            return results
+
+        # Run MMR selection
+        try:
+            selected_indices = mmr_sort(
+                query_embedding=query_embedding.tolist(),
+                candidate_embeddings=candidate_embeddings,
+                candidate_indices=list(range(len(valid_results))),
+                top_k=min(top_k, len(valid_results)),
+                lambda_mult=lambda_mult
+            )
+
+            # Reorder valid results according to MMR selection
+            reordered = [valid_results[i] for i in selected_indices]
+
+            # Add any results without embeddings at the end
+            results_without_emb = [r for i, r in enumerate(results) if i not in valid_indices]
+            reordered.extend(results_without_emb[:max(0, top_k - len(reordered))])
+
+            logger.debug(
+                f"MMR selected {len(reordered)} diverse results from {len(results)} candidates"
+            )
+            return reordered
+
+        except Exception as e:
+            logger.warning(f"MMR selection failed: {e}, returning original order")
+            return results
     
     # =========================================================================
     # Linked Content
@@ -777,21 +1075,31 @@ class SearchService:
         if not results:
             return results
 
-        # Get chunk_ids (all results are chunks in synthesis context)
-        chunk_ids = [UUID(r.chunk_id) for r in results]
+        # Separate real chunks from self-carrying image results (Dual-Path pattern)
+        # Self-carrying images have chunk_id like "img_<uuid>" and already have .images populated
+        chunk_results = [r for r in results if not r.chunk_id.startswith('img_')]
+        image_results = [r for r in results if r.chunk_id.startswith('img_')]
+
+        if not chunk_results:
+            # All results are self-carrying images, nothing to enrich
+            return results
+
+        # Get chunk_ids (only real chunks need image enrichment)
+        chunk_ids = [UUID(r.chunk_id) for r in chunk_results]
 
         if not chunk_ids:
             return results
 
         # Query using schema-aligned column names (v4.1)
         # Includes caption_embedding for semantic figure matching
+        # NOTE: Use storage_path (actual path) with fallback to file_path
         query = """
             SELECT
                 l.chunk_id,
                 l.score AS link_score,
                 i.id,
                 i.document_id,
-                i.file_path,
+                COALESCE(NULLIF(i.storage_path, ''), i.file_path) AS file_path,
                 i.page_number,
                 i.caption,
                 i.vlm_caption,

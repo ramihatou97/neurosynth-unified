@@ -263,41 +263,92 @@ class EnhancedSynthesisEngine:
         total_enrichment_time = 0
         all_external_citations = []
 
+        # Per-section timeout (enrichment + generation)
+        SECTION_TIMEOUT = 90  # seconds per section
+        ENRICHMENT_TIMEOUT = 45  # seconds for enrichment
+
         for section_name, level in TEMPLATE_SECTIONS.get(template_type, []):
             logger.info(f"Generating section with enrichment: {section_name}")
 
             section_chunks = context["sections"].get(section_name, [])
 
-            # Run enrichment for this section
-            enrichment = await self._enricher.enrich_context(
-                topic=topic,
-                internal_chunks=section_chunks,
-                section_name=section_name,
-            )
-            enrichment_results[section_name] = enrichment
-            total_enrichment_time += enrichment.enrichment_time_ms
+            # Run enrichment for this section (with timeout and graceful degradation)
+            enrichment = None
+            try:
+                enrichment = await asyncio.wait_for(
+                    self._enricher.enrich_context(
+                        topic=topic,
+                        internal_chunks=section_chunks,
+                        section_name=section_name,
+                    ),
+                    timeout=ENRICHMENT_TIMEOUT
+                )
+                enrichment_results[section_name] = enrichment
+                total_enrichment_time += enrichment.enrichment_time_ms
+            except asyncio.TimeoutError:
+                logger.warning(f"Enrichment timed out for section '{section_name}', continuing without external sources")
+                # Create empty enrichment result
+                enrichment = EnrichmentResult(
+                    topic=topic, section_name=section_name,
+                    gaps_identified=[], gaps_filled=[], gaps_unfilled=[],
+                    external_results=[], external_context="", external_citations=[],
+                    internal_chunk_count=len(section_chunks), external_source_count=0,
+                    enrichment_time_ms=ENRICHMENT_TIMEOUT * 1000, total_tokens_used=0,
+                    used_external=False, gap_analysis_succeeded=False,
+                )
+            except Exception as e:
+                logger.warning(f"Enrichment failed for section '{section_name}': {e}, continuing without external sources")
+                enrichment = EnrichmentResult(
+                    topic=topic, section_name=section_name,
+                    gaps_identified=[], gaps_filled=[], gaps_unfilled=[],
+                    external_results=[], external_context="", external_citations=[],
+                    internal_chunk_count=len(section_chunks), external_source_count=0,
+                    enrichment_time_ms=0, total_tokens_used=0,
+                    used_external=False, gap_analysis_succeeded=False,
+                )
 
-            # Generate section with enriched context
-            section_content, figure_requests = await self._generate_section_enriched(
-                topic=topic,
-                section_name=section_name,
-                chunks=section_chunks,
-                template_type=template_type,
-                enrichment=enrichment,
-            )
+            # Generate section with enriched context (with timeout and graceful degradation)
+            try:
+                section_content, figure_requests = await asyncio.wait_for(
+                    self._generate_section_enriched(
+                        topic=topic,
+                        section_name=section_name,
+                        chunks=section_chunks,
+                        template_type=template_type,
+                        enrichment=enrichment,
+                    ),
+                    timeout=SECTION_TIMEOUT
+                )
 
-            sections.append(SynthesisSection(
-                title=section_name,
-                content=section_content,
-                level=level,
-                sources=[c["id"] for c in section_chunks[:5]],
-            ))
+                sections.append(SynthesisSection(
+                    title=section_name,
+                    content=section_content,
+                    level=level,
+                    sources=[c["id"] for c in section_chunks[:5]],
+                ))
 
-            all_figure_requests.extend(figure_requests)
+                all_figure_requests.extend(figure_requests)
 
-            # Collect external citations
-            if enrichment.used_external:
-                all_external_citations.extend(enrichment.external_citations)
+                # Collect external citations
+                if enrichment and enrichment.used_external:
+                    all_external_citations.extend(enrichment.external_citations)
+
+            except asyncio.TimeoutError:
+                logger.error(f"Section generation timed out for '{section_name}', adding placeholder")
+                sections.append(SynthesisSection(
+                    title=section_name,
+                    content=f"[Content generation timed out for this section. Topic: {topic}, Section: {section_name}]",
+                    level=level,
+                    sources=[],
+                ))
+            except Exception as e:
+                logger.error(f"Section generation failed for '{section_name}': {e}, adding placeholder")
+                sections.append(SynthesisSection(
+                    title=section_name,
+                    content=f"[Content generation failed for this section. Error: {str(e)[:100]}]",
+                    level=level,
+                    sources=[],
+                ))
 
         # Stage 4: Resolve figures (delegate to base)
         resolved_figures = []
@@ -444,17 +495,29 @@ Write only the section content, no title."""
 
         return content, figure_requests
 
-    async def _call_claude(self, prompt: str, max_tokens: int = 4000) -> str:
-        """Rate-limited Claude API call."""
+    async def _call_claude(self, prompt: str, max_tokens: int = 4000, timeout: int = 60) -> str:
+        """Rate-limited Claude API call with timeout.
+
+        Args:
+            prompt: The prompt to send
+            max_tokens: Maximum tokens in response
+            timeout: Timeout in seconds (default 60s per call)
+        """
         await self._base_engine.rate_limiter.acquire()
 
         try:
-            response = await self._client.messages.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
+            response = await asyncio.wait_for(
+                self._client.messages.create(
+                    model=self._model,
+                    max_tokens=max_tokens,
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=timeout
             )
             return response.content[0].text
+        except asyncio.TimeoutError:
+            logger.error(f"Claude API call timed out after {timeout}s")
+            raise
         except Exception as e:
             logger.error(f"Claude API error: {e}")
             raise

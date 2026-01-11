@@ -404,15 +404,34 @@ class ExamSimulationService:
     
     async def predict_pass_probability(self, user_id: UUID) -> Dict:
         """Predict probability of passing based on performance."""
+        # Default fallback response with all required fields
+        default_response = {
+            "probability": 0.5,
+            "confidence": "low",
+            "factors": {
+                "average_score": 0.0,
+                "weighted_category_score": 0.0,
+                "exams_taken": 0,
+                "reason": "Insufficient data"
+            }
+        }
+
         if not self.repo:
-            return {"probability": 0.5, "confidence": "low"}
-        
-        # Get historical data
-        history = await self.repo.get_exam_history(user_id, limit=5)
-        category_perf = await self.repo.get_category_performance(user_id)
-        
+            return default_response
+
+        try:
+            # Get historical data
+            history = await self.repo.get_exam_history(user_id, limit=5)
+            category_perf = await self.repo.get_category_performance(user_id)
+        except Exception as e:
+            # Database tables may not exist yet
+            import logging
+            logging.getLogger(__name__).warning(f"predict_pass_probability DB error: {e}")
+            return default_response
+
         if not history:
-            return {"probability": 0.5, "confidence": "low", "reason": "No exam history"}
+            default_response["factors"]["reason"] = "No exam history"
+            return default_response
         
         # Calculate weighted average
         recent_scores = [h.get("score_percentage", 0) for h in history]

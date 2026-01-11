@@ -3,6 +3,9 @@ NeuroSynth Unified - API Routes
 ================================
 
 Route modules for the FastAPI application.
+
+NOTE: V3 Synthesis features (web research enrichment) have been consolidated
+into the main synthesis router. Use include_web_research=True to enable.
 """
 
 from src.api.routes.search import router as search_router
@@ -14,9 +17,8 @@ from src.api.routes.ingest import router as ingest_router
 from src.api.routes.entities import router as entities_router
 from src.api.routes.indexes import router as indexes_router
 
-# V3 Routes
-from src.api.routes.rag_v3 import router as rag_v3_router
-from src.api.routes.synthesis_v3 import router as synthesis_v3_router
+# V2 Routes - Unified RAG with external search integration (consolidated from V1+V2+V3)
+from src.api.routes.rag_unified import router as rag_unified_router
 
 # NPRSS Learning Routes
 from src.api.routes.learning import router as learning_router
@@ -31,9 +33,8 @@ __all__ = [
     'ingest_router',
     'entities_router',
     'indexes_router',
-    # V3 Routes
-    'rag_v3_router',
-    'synthesis_v3_router',
+    # V2 Routes - Unified RAG (consolidated from V1+V2+V3)
+    'rag_unified_router',
     # NPRSS Learning Routes
     'learning_router',
     'learning_extended_router',

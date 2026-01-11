@@ -312,6 +312,9 @@ class ContextAssembler:
                 else:
                     snippet = snippet.rstrip() + "..."
             
+            chunk_type_val = getattr(chunk, 'chunk_type', None)
+            if chunk_type_val and hasattr(chunk_type_val, 'value'):
+                chunk_type_val = chunk_type_val.value
             citations.append(Citation(
                 index=i,
                 chunk_id=getattr(chunk, 'id', str(i)),
@@ -319,7 +322,7 @@ class ContextAssembler:
                 snippet=snippet,
                 document_id=getattr(chunk, 'document_id', None),
                 page_number=getattr(chunk, 'page_number', None),
-                chunk_type=getattr(chunk, 'chunk_type', None)
+                chunk_type=chunk_type_val
             ))
         
         return citations

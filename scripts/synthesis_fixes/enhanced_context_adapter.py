@@ -406,6 +406,13 @@ class EnhancedContextAdapter:
         all_cuis = set()  # FIX #4: Track all CUIs for validation
         filtered_count = 0
 
+        # Debug: log result types and check for images
+        if search_results:
+            sample = search_results[0]
+            has_images_attr = hasattr(sample, 'images')
+            images_value = getattr(sample, 'images', None)
+            logger.info(f"First result type: {type(sample).__name__}, has_images={has_images_attr}, images={type(images_value).__name__ if images_value is not None else 'None'}, len={len(images_value) if images_value else 0}")
+
         for result in search_results:
             # FIX #1: Compute composite quality score
             quality_score = self.compute_quality_score(result)
@@ -498,6 +505,9 @@ class EnhancedContextAdapter:
 
             # FIX #3: Collect images with embeddings
             images = getattr(result, 'images', []) or []
+            # Debug: log when we find images
+            if images:
+                logger.debug(f"Found {len(images)} images in result chunk_id={getattr(result, 'chunk_id', 'unknown')}")
             for img in images:
                 catalog_entry = self.build_image_catalog_entry(img, result)
                 image_catalog.append(catalog_entry)
@@ -558,7 +568,7 @@ class EnhancedFigureResolver:
 
     def __init__(
         self,
-        min_match_score: float = 0.3,
+        min_match_score: float = 0.2,
         prefer_semantic: bool = True
     ):
         """
@@ -709,20 +719,31 @@ class EnhancedFigureResolver:
                     image.get('cuis', [])
                 )
 
-                # Combined score
+                # Combined score - adjust weights based on available signals
                 if self.prefer_semantic and semantic_score > 0:
-                    # Semantic-weighted
-                    combined = (
-                        semantic_score * 0.5 +
-                        keyword_score * 0.3 +
-                        cui_score * 0.2
-                    )
+                    # Semantic-weighted (embedding similarity available)
+                    if cui_score > 0:
+                        combined = (
+                            semantic_score * 0.5 +
+                            keyword_score * 0.3 +
+                            cui_score * 0.2
+                        )
+                    else:
+                        # No CUIs - weight keyword and semantic only
+                        combined = (
+                            semantic_score * 0.6 +
+                            keyword_score * 0.4
+                        )
                 else:
-                    # Keyword-weighted
-                    combined = (
-                        keyword_score * 0.6 +
-                        cui_score * 0.4
-                    )
+                    # Keyword-weighted (no embedding)
+                    if cui_score > 0:
+                        combined = (
+                            keyword_score * 0.6 +
+                            cui_score * 0.4
+                        )
+                    else:
+                        # No CUIs available - use keyword only but don't penalize
+                        combined = keyword_score
 
                 if combined > best_score:
                     best_score = combined
@@ -733,6 +754,18 @@ class EnhancedFigureResolver:
                         'cui': cui_score,
                         'combined': combined
                     }
+
+            # Debug logging for diagnosis
+            if best_match:
+                logger.debug(
+                    f"Figure match candidate: request='{req_desc[:50]}...' "
+                    f"best_caption='{best_match.get('caption', '')[:50]}...' "
+                    f"score={best_score:.3f} (kw={best_breakdown.get('keyword', 0):.2f}, "
+                    f"sem={best_breakdown.get('semantic', 0):.2f}, cui={best_breakdown.get('cui', 0):.2f}), "
+                    f"threshold={self.min_match_score}"
+                )
+            else:
+                logger.warning(f"No candidate found for figure request: '{req_desc[:50]}...'")
 
             # Accept match if above threshold
             if best_match and best_score >= self.min_match_score:

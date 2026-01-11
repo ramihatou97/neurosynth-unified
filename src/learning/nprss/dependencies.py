@@ -623,11 +623,9 @@ def get_fsrs_enhanced() -> FSRSEnhanced:
 
     config = FSRSConfig(
         exam_date=None,  # Will be set per-user
-        retention_targets={
-            'factual': 0.90,
-            'procedural': 0.92,
-            'csp': 0.95
-        }
+        retention_factual=0.90,
+        retention_procedural=0.92,
+        retention_csp=0.95
     )
     return FSRSEnhanced(config=config)
 

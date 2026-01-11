@@ -68,6 +68,9 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from abc import ABC, abstractmethod
 
+# Import robust parsing utilities for handling LLM JSON output
+from src.shared.parsing import extract_and_parse_json, LLMParsingError
+
 logger = logging.getLogger(__name__)
 
 
@@ -345,13 +348,17 @@ QUESTION: {query}
 Find recent information that complements or updates the above context."""
 
         try:
-            response = await self._client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=2000,
+            # 30 second timeout for Perplexity API call
+            response = await asyncio.wait_for(
+                self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    max_tokens=2000,
+                ),
+                timeout=30
             )
 
             elapsed_ms = int((time.time() - start) * 1000)
@@ -359,8 +366,27 @@ Find recent information that complements or updates the above context."""
             # Parse response
             content = response.choices[0].message.content
 
-            # Extract sources from Perplexity's citation format
-            sources = self._extract_sources(content)
+            # Log response preview
+            logger.info(f"Perplexity response ({len(content)} chars)")
+
+            # Extract sources from Perplexity API response
+            # Perplexity returns citations in response.citations field (list of URLs)
+            sources = []
+            citations = getattr(response, 'citations', None) or []
+            if citations:
+                logger.info(f"Found {len(citations)} citations in Perplexity response.citations")
+                for url in citations[:10]:  # Limit to 10
+                    sources.append(ExternalSource(
+                        title=self._extract_domain_title(url),
+                        url=url,
+                        snippet="",
+                        source_type=self._classify_source(url),
+                    ))
+            else:
+                # Fallback: try to extract from content text
+                sources = self._extract_sources(content)
+
+            logger.info(f"Extracted {len(sources)} sources from Perplexity response")
 
             return ExternalSearchResult(
                 query=query,
@@ -371,6 +397,14 @@ Find recent information that complements or updates the above context."""
                 tokens_used=response.usage.total_tokens if response.usage else 0,
             )
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Perplexity search timed out after 30s for query: {query[:50]}")
+            return ExternalSearchResult(
+                query=query,
+                provider="perplexity",
+                sources=[],
+                summary="Search timed out",
+            )
         except Exception as e:
             logger.error(f"Perplexity search failed: {e}")
             return ExternalSearchResult(
@@ -381,23 +415,101 @@ Find recent information that complements or updates the above context."""
             )
 
     def _extract_sources(self, content: str) -> List[ExternalSource]:
-        """Extract source citations from Perplexity response."""
+        """Extract source citations from Perplexity response.
+
+        Handles multiple citation formats:
+        1. Markdown links: [title](url)
+        2. Plain URLs: https://example.com
+        3. Numbered refs: [1] Title - https://...
+        4. Reference lists: 1. https://... or - https://...
+        """
         sources = []
+        seen_urls = set()
 
-        # Perplexity often includes [N] citations
-        # Extract URLs and titles from the response
-        url_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
-        matches = re.findall(url_pattern, content)
+        # Pattern 1: Markdown links [title](url)
+        markdown_pattern = r'\[([^\]]+)\]\((https?://[^\)]+)\)'
+        for title, url in re.findall(markdown_pattern, content):
+            if url not in seen_urls:
+                seen_urls.add(url)
+                sources.append(ExternalSource(
+                    title=title.strip(),
+                    url=url,
+                    snippet="",
+                    source_type=self._classify_source(url),
+                ))
 
-        for title, url in matches[:10]:  # Limit to 10 sources
-            sources.append(ExternalSource(
-                title=title,
-                url=url,
-                snippet="",
-                source_type=self._classify_source(url),
-            ))
+        # Pattern 2: Plain URLs (not already captured in markdown)
+        # Matches URLs that aren't inside parentheses (markdown format)
+        plain_url_pattern = r'(?<!\()(https?://[^\s\)\]<>"]+)'
+        for url in re.findall(plain_url_pattern, content):
+            # Clean trailing punctuation
+            url = url.rstrip('.,;:')
+            if url not in seen_urls:
+                seen_urls.add(url)
+                # Try to extract title from context (text before URL on same line)
+                title = self._extract_title_for_url(content, url)
+                sources.append(ExternalSource(
+                    title=title,
+                    url=url,
+                    snippet="",
+                    source_type=self._classify_source(url),
+                ))
 
-        return sources
+        # Pattern 3: Numbered citations [1], [2], etc. with reference section
+        # Look for reference section at end of content
+        ref_section_patterns = [
+            r'(?:References?|Sources?|Citations?):\s*\n([\s\S]+?)(?:\n\n|\Z)',
+            r'\n\s*\[(\d+)\][^\[]+?(https?://[^\s\)\]<>"]+)',
+        ]
+        for pattern in ref_section_patterns:
+            matches = re.findall(pattern, content, re.IGNORECASE)
+            if matches and isinstance(matches[0], tuple):
+                for _, url in matches:
+                    url = url.rstrip('.,;:')
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        sources.append(ExternalSource(
+                            title=self._extract_title_for_url(content, url),
+                            url=url,
+                            snippet="",
+                            source_type=self._classify_source(url),
+                        ))
+
+        return sources[:10]  # Limit to 10 sources
+
+    def _extract_title_for_url(self, content: str, url: str) -> str:
+        """Try to extract a title for a URL from surrounding context."""
+        # Look for text before URL on the same line
+        lines = content.split('\n')
+        for line in lines:
+            if url in line:
+                # Remove the URL and clean up
+                idx = line.find(url)
+                prefix = line[:idx].strip()
+                # Remove numbering and bullets
+                prefix = re.sub(r'^[\d\.\-\*\[\]]+\s*', '', prefix)
+                # Remove trailing punctuation
+                prefix = prefix.rstrip(':- ')
+                if prefix and len(prefix) > 3:
+                    return prefix[:100]  # Limit title length
+
+        # Fallback: extract domain as title
+        domain_match = re.search(r'https?://(?:www\.)?([^/]+)', url)
+        if domain_match:
+            return domain_match.group(1)
+        return "External Source"
+
+    def _extract_domain_title(self, url: str) -> str:
+        """Extract a readable title from URL domain."""
+        domain_match = re.search(r'https?://(?:www\.)?([^/]+)', url)
+        if domain_match:
+            domain = domain_match.group(1)
+            # Clean up common domain patterns
+            domain = domain.replace('.com', '').replace('.org', '').replace('.gov', '')
+            domain = domain.replace('.edu', '').replace('.net', '')
+            # Capitalize and clean
+            return domain.replace('.', ' ').replace('-', ' ').title()
+        return "External Source"
 
     def _classify_source(self, url: str) -> str:
         """Classify source type based on URL."""
@@ -486,23 +598,29 @@ REQUIREMENTS:
 Format your response with clear source attributions."""
 
         try:
-            # Use grounding if enabled
+            # Use grounding if enabled (with 30s timeout)
             if self.enable_grounding:
                 from google.generativeai import GenerationConfig
-                response = await asyncio.to_thread(
-                    self._client.generate_content,
-                    prompt,
-                    generation_config=GenerationConfig(
-                        temperature=0.1,  # Low temp for factual accuracy
-                        max_output_tokens=2000,
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._client.generate_content,
+                        prompt,
+                        generation_config=GenerationConfig(
+                            temperature=0.1,  # Low temp for factual accuracy
+                            max_output_tokens=2000,
+                        ),
+                        # Note: Grounding tools require specific API setup
+                        # tools=[{"google_search": {}}],  # Enable when available
                     ),
-                    # Note: Grounding tools require specific API setup
-                    # tools=[{"google_search": {}}],  # Enable when available
+                    timeout=30
                 )
             else:
-                response = await asyncio.to_thread(
-                    self._client.generate_content,
-                    prompt,
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._client.generate_content,
+                        prompt,
+                    ),
+                    timeout=30
                 )
 
             elapsed_ms = int((time.time() - start) * 1000)
@@ -518,6 +636,14 @@ Format your response with clear source attributions."""
                 search_time_ms=elapsed_ms,
             )
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Gemini search timed out after 30s for query: {query[:50]}")
+            return ExternalSearchResult(
+                query=query,
+                provider="gemini",
+                sources=[],
+                summary="Search timed out",
+            )
         except Exception as e:
             logger.error(f"Gemini search failed: {e}")
             return ExternalSearchResult(
@@ -617,10 +743,14 @@ class GapAnalyzer:
         )
 
         try:
-            response = await self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}],
+            # 45 second timeout for gap analysis
+            response = await asyncio.wait_for(
+                self.client.messages.create(
+                    model=self.model,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=45
             )
 
             content = response.content[0].text
@@ -638,6 +768,9 @@ class GapAnalyzer:
             logger.info(f"Gap analysis found {len(gaps)} gaps for '{topic}'")
             return gaps
 
+        except asyncio.TimeoutError:
+            logger.warning(f"Gap analysis timed out after 45s for '{topic}'")
+            return []
         except Exception as e:
             logger.error(f"Gap analysis failed: {e}")
             return []
@@ -748,38 +881,116 @@ Return as JSON array:
 Return empty array [] if internal coverage is sufficient."""
 
     def _parse_gaps(self, response: str) -> List[KnowledgeGap]:
-        """Parse the LLM response into KnowledgeGap objects."""
+        """Parse the LLM response into KnowledgeGap objects using robust parsing."""
         gaps = []
 
-        # Extract JSON from response
-        json_match = re.search(r'\[[\s\S]*\]', response)
-        if not json_match:
-            logger.warning("No JSON array found in gap analysis response")
-            return gaps
-
         try:
-            data = json.loads(json_match.group())
+            # Extract JSON from response (handles markdown fences, etc.)
+            import re
+            import json
+
+            # Try to find JSON array in response
+            text = response.strip()
+
+            # Remove markdown code fences if present
+            if "```" in text:
+                match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+                if match:
+                    text = match.group(1).strip()
+
+            # Find array bounds
+            start = text.find('[')
+            end = text.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                text = text[start:end+1]
+
+            data = json.loads(text)
+
+            if not isinstance(data, list):
+                logger.warning(f"Expected list from gap analysis, got {type(data)}")
+                return gaps
 
             for item in data:
+                if not isinstance(item, dict):
+                    continue
+
                 try:
+                    # Map gap_type with fallback
+                    gap_type_str = item.get("gap_type", "missing_data")
+                    try:
+                        gap_type = GapType(gap_type_str)
+                    except ValueError:
+                        gap_type = GapType.MISSING_DATA
+
+                    # Map priority with fallback
+                    priority_str = item.get("priority", "medium")
+                    try:
+                        priority = GapPriority(priority_str)
+                    except ValueError:
+                        priority = GapPriority.MEDIUM
+
                     gap = KnowledgeGap(
                         topic=item.get("topic", ""),
                         description=item.get("description", ""),
-                        gap_type=GapType(item.get("gap_type", "missing_data")),
-                        priority=GapPriority(item.get("priority", "medium")),
+                        gap_type=gap_type,
+                        priority=priority,
                         suggested_query=item.get("suggested_query", ""),
                         internal_coverage=item.get("internal_has", ""),
                         external_insight=item.get("external_has", ""),
                         confidence=float(item.get("confidence", 0.5)),
                     )
                     gaps.append(gap)
-                except (KeyError, ValueError) as e:
-                    logger.warning(f"Failed to parse gap: {e}")
+                except (KeyError, ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse gap item: {e}")
                     continue
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse gap analysis JSON: {e}")
+        except LLMParsingError as e:
+            logger.warning(f"Robust parsing failed for gap analysis: {e}")
+            # Fallback to regex extraction for simpler responses
+            json_match = re.search(r'\[[\s\S]*?\]', response)
+            if json_match:
+                try:
+                    data = json.loads(json_match.group())
+                    return self._parse_gaps_from_list(data)
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            logger.error(f"Unexpected error parsing gap analysis: {e}")
 
+        return gaps
+
+    def _parse_gaps_from_list(self, data: list) -> List[KnowledgeGap]:
+        """Helper to parse gaps from an already-parsed list."""
+        gaps = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                gap_type_str = item.get("gap_type", "missing_data")
+                try:
+                    gap_type = GapType(gap_type_str)
+                except ValueError:
+                    gap_type = GapType.MISSING_DATA
+
+                priority_str = item.get("priority", "medium")
+                try:
+                    priority = GapPriority(priority_str)
+                except ValueError:
+                    priority = GapPriority.MEDIUM
+
+                gap = KnowledgeGap(
+                    topic=item.get("topic", ""),
+                    description=item.get("description", ""),
+                    gap_type=gap_type,
+                    priority=priority,
+                    suggested_query=item.get("suggested_query", ""),
+                    internal_coverage=item.get("internal_has", ""),
+                    external_insight=item.get("external_has", ""),
+                    confidence=float(item.get("confidence", 0.5)),
+                )
+                gaps.append(gap)
+            except Exception as e:
+                logger.warning(f"Failed to parse gap: {e}")
         return gaps
 
 
@@ -936,6 +1147,7 @@ class ResearchEnricher:
 
         result.external_results.append(external_overview)
         result.total_tokens_used += external_overview.tokens_used
+        logger.info(f"Overview result has {len(external_overview.sources)} sources")
 
         # Step 2: Run gap analysis
         if self.gap_analyzer:

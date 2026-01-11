@@ -40,13 +40,14 @@ from src.api.routes import (
     ingest_router,
     entities_router,
     indexes_router,
-    # V3 Routes
-    rag_v3_router,
-    synthesis_v3_router,
+    # V2 Routes - Unified RAG (consolidated from V1+V2+V3)
+    rag_unified_router,
     # NPRSS Learning Routes
     learning_router,
     learning_extended_router,
 )
+# NOTE: V3 Synthesis features (web research) are now in main synthesis router
+# Use include_web_research=True in POST /api/synthesis/generate
 from src.api.routes.images import router as images_router
 from src.api.routes.knowledge_graph import router as knowledge_graph_router
 from src.api.routes.registry import router as registry_router, load_registry_from_db
@@ -202,9 +203,12 @@ Currently open access. Production deployments should add authentication.
     app.include_router(registry_router)  # Authority registry API
     app.include_router(chat_router, prefix="/api/v1")  # Enhanced chat with synthesis linking
 
-    # V3 Routes - Enhanced RAG and Synthesis with web research
-    app.include_router(rag_v3_router)  # /api/rag/v3/* - Unified RAG with tri-modal processing
-    app.include_router(synthesis_v3_router)  # /api/synthesis/v3/* - Enhanced synthesis with enrichment
+    # V2 Routes - Unified RAG (consolidated from V1+V2+V3)
+    # All RAG features now available at /api/v2/rag/*
+    app.include_router(rag_unified_router, prefix="/api")
+
+    # NOTE: V3 Synthesis features are now consolidated into main synthesis router
+    # Use include_web_research=True in POST /api/synthesis/generate
 
     # Library Scanner - PDF metadata extraction and selective ingestion
     app.include_router(library_router, prefix="/api/v1")  # /api/v1/library/*

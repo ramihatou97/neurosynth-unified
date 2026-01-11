@@ -7,6 +7,7 @@ Changes from original:
 - Updated ContextAdapter to access SearchResult fields directly
 - Added RateLimiter for Claude API
 - Added graceful Gemini verification degradation
+- Added 14-stage gap detection integration
 """
 
 import asyncio
@@ -22,6 +23,21 @@ if TYPE_CHECKING:
     from src.shared.models import SearchResult, ExtractedImage
 
 from src.synthesis.conflicts import ConflictHandler, ConflictReport
+
+# Gap detection imports
+try:
+    from src.synthesis.gap_models import (
+        GapReport,
+        GapFillStrategy,
+        TemplateType as GapTemplateType,
+    )
+    from src.synthesis.gap_detection_service import GapDetectionService, SearchResult as GapSearchResult
+    from src.synthesis.gap_filling_service import GapFillingService
+    GAP_DETECTION_AVAILABLE = True
+except ImportError:
+    GAP_DETECTION_AVAILABLE = False
+    GapReport = None
+    GapFillStrategy = None
 
 # Import enhanced adapters for synthesis alignment fixes
 try:
@@ -356,10 +372,23 @@ class SynthesisResult:
     # Conflict detection results
     conflict_report: Optional["ConflictReport"] = None
 
+    # Gap detection results (14-stage neurosurgical analysis)
+    gap_report: Optional["GapReport"] = None
+
     @property
     def conflict_count(self) -> int:
         """Number of detected conflicts."""
         return self.conflict_report.count if self.conflict_report else 0
+
+    @property
+    def critical_gap_count(self) -> int:
+        """Number of critical gaps (safety-critical issues)."""
+        return self.gap_report.critical_gaps if self.gap_report else 0
+
+    @property
+    def requires_expert_review(self) -> bool:
+        """True if any safety-critical gaps require expert review."""
+        return self.gap_report.requires_expert_review if self.gap_report else False
 
     def __post_init__(self):
         self.total_words = sum(s.word_count for s in self.sections)
@@ -385,6 +414,10 @@ class SynthesisResult:
             "verified": self.verified,
             "conflict_count": self.conflict_count,
             "conflict_report": self.conflict_report.to_dict() if self.conflict_report else None,
+            # Gap detection results
+            "critical_gap_count": self.critical_gap_count,
+            "requires_expert_review": self.requires_expert_review,
+            "gap_report": self.gap_report.to_dict() if self.gap_report else None,
         }
 
     def to_markdown(self) -> str:
@@ -695,8 +728,9 @@ class FigureResolver:
                 resolved_figures.append({
                     "placeholder_id": request.placeholder_id,
                     "image_id": request.resolved_id,
-                    "path": request.resolved_path,
-                    "caption": request.caption,
+                    "image_path": request.resolved_path,  # Frontend expects image_path
+                    "image_caption": request.caption,      # Frontend expects image_caption
+                    "request_description": request.topic,  # For frontend matching
                     "match_score": best_score,
                 })
         
@@ -745,12 +779,14 @@ class FigureResolver:
 class SynthesisEngine:
     """
     Main synthesis engine using Phase 1 SearchResult.
-    
+
     Flow:
     1. ContextAdapter.adapt() - organize SearchResults by template section
-    2. Generate sections with Claude API (rate-limited)
-    3. FigureResolver.resolve() - match placeholders to images
-    4. Optional: Gemini verification
+    2. Gap Detection (14-stage neurosurgical analysis) - BEFORE synthesis
+    3. Generate sections with Claude API (rate-limited)
+    4. FigureResolver.resolve() - match placeholders to images
+    5. Optional: Gap filling with external research
+    6. Optional: Gemini verification
     """
 
     def __init__(
@@ -762,6 +798,10 @@ class SynthesisEngine:
         deep_conflict_check: bool = False,
         use_enhanced_adapters: bool = True,
         umls_extractor=None,  # For ContentValidator hallucination detection
+        # Gap detection services (14-stage neurosurgical analysis)
+        gap_detector: Optional["GapDetectionService"] = None,
+        gap_filler: Optional["GapFillingService"] = None,
+        embedding_service=None,  # For subspecialty classification
     ):
         self.client = anthropic_client
         self.model = model
@@ -769,6 +809,12 @@ class SynthesisEngine:
         self.verification_client = verification_client
         self.has_verification = verification_client is not None
         self.deep_conflict_check = deep_conflict_check
+
+        # Gap detection (14-stage neurosurgical analysis)
+        self.gap_detector = gap_detector
+        self.gap_filler = gap_filler
+        self.embedding_service = embedding_service
+        self.has_gap_detection = gap_detector is not None and GAP_DETECTION_AVAILABLE
 
         # Use enhanced adapters if available and requested
         # Enhanced adapters provide:
@@ -779,7 +825,7 @@ class SynthesisEngine:
         if use_enhanced_adapters and ENHANCED_ADAPTERS_AVAILABLE:
             logger.info("Using enhanced synthesis adapters (alignment fixes enabled)")
             self.adapter = EnhancedContextAdapter(min_quality_score=0.3)
-            self.figure_resolver = EnhancedFigureResolver(min_match_score=0.3, prefer_semantic=True)
+            self.figure_resolver = EnhancedFigureResolver(min_match_score=0.2, prefer_semantic=True)
             self.content_validator = ContentValidator(
                 umls_extractor=umls_extractor,
                 log_hallucinations=True
@@ -817,23 +863,71 @@ class SynthesisEngine:
         search_results: List["SearchResult"],  # Phase 1 model!
         include_verification: bool = False,
         include_figures: bool = True,
+        gap_fill_strategy: Optional[str] = None,  # "none", "high_priority", "all", "external"
     ) -> SynthesisResult:
         """
         Generate textbook-quality synthesis from SearchResult list.
-        
+
         Args:
             topic: Chapter topic
             template_type: Template style
             search_results: List[SearchResult] from SearchService
             include_verification: Run Gemini verification
             include_figures: Resolve figure placeholders
+            gap_fill_strategy: Gap filling strategy:
+                - "none": Report gaps but don't fill
+                - "high_priority": Fill only CRITICAL and HIGH gaps (default)
+                - "all": Fill all gaps with internal/external fallback
+                - "external": Always fetch external research
         """
         start_time = time()
-        
+
         # Stage 1: Adapt context (no conversion - SearchResult has everything)
         logger.info(f"Adapting {len(search_results)} SearchResults for synthesis")
         context = self.adapter.adapt(topic, search_results, template_type)
-        
+
+        # Stage 1.5: Gap Detection (14-stage neurosurgical analysis)
+        gap_report = None
+        if self.has_gap_detection:
+            logger.info("Running 14-stage gap detection analysis")
+            try:
+                # Map template type to gap detection template type
+                gap_template = self._map_template_type(template_type)
+
+                # Convert SearchResults to gap detection format
+                gap_search_results = [
+                    GapSearchResult(
+                        chunk_id=r.chunk_id,
+                        content=r.content,
+                        document_id=r.document_id,
+                        document_title=r.document_title or r.title,
+                        entity_names=r.entity_names or [],
+                        semantic_score=r.semantic_score,
+                    )
+                    for r in search_results
+                ]
+
+                # Run gap detection
+                gap_report = await self.gap_detector.detect_gaps(
+                    topic=topic,
+                    template_type=gap_template,
+                    search_results=gap_search_results,
+                )
+
+                logger.info(
+                    f"Gap detection complete: {gap_report.total_gaps} gaps, "
+                    f"{gap_report.critical_gaps} critical"
+                )
+
+                # Log safety-critical gaps prominently
+                if gap_report.requires_expert_review:
+                    for flag in gap_report.safety_flags[:5]:
+                        logger.warning(f"⚠️ Safety Gap: {flag}")
+
+            except Exception as e:
+                logger.error(f"Gap detection failed: {e}")
+                gap_report = None
+
         # Stage 2: Generate title and abstract
         title, abstract = await self._generate_title_abstract(topic, template_type, context)
         
@@ -942,6 +1036,7 @@ class SynthesisEngine:
             resolved_figures=resolved_figures,
             synthesis_time_ms=int((time() - start_time) * 1000),
             conflict_report=conflict_report,
+            gap_report=gap_report,
         )
 
         # Stage 6: Optional verification
@@ -952,13 +1047,30 @@ class SynthesisEngine:
             else:
                 logger.warning("Verification requested but Gemini client not available")
 
+        gap_info = ""
+        if gap_report:
+            gap_info = f", {gap_report.total_gaps} gaps ({gap_report.critical_gaps} critical)"
+
         logger.info(
             f"Synthesis complete: {result.total_words} words, "
-            f"{result.total_figures} figures, {result.conflict_count} conflicts, "
+            f"{result.total_figures} figures, {result.conflict_count} conflicts{gap_info}, "
             f"{result.synthesis_time_ms}ms"
         )
 
         return result
+
+    def _map_template_type(self, template_type: TemplateType) -> "GapTemplateType":
+        """Map synthesis TemplateType to gap detection TemplateType."""
+        if not GAP_DETECTION_AVAILABLE:
+            return None
+
+        mapping = {
+            TemplateType.PROCEDURAL: GapTemplateType.PROCEDURAL,
+            TemplateType.DISORDER: GapTemplateType.DISORDER,
+            TemplateType.ANATOMY: GapTemplateType.ANATOMY,
+            TemplateType.ENCYCLOPEDIA: GapTemplateType.CONCEPT,  # Map encyclopedia to concept
+        }
+        return mapping.get(template_type, GapTemplateType.CONCEPT)
 
     async def _generate_title_abstract(
         self,
@@ -1048,19 +1160,47 @@ REQUIREMENTS:
 Write only the section content, no title."""
 
         content = await self._call_claude(prompt, max_tokens=2000)
-        
-        # Extract figure requests
+
+        # Extract figure requests - support both structured and simple formats
         figure_requests = []
-        pattern = r'\[REQUEST_FIGURE:\s*type="([^"]+)"\s*topic="([^"]+)"\]'
-        
-        for i, match in enumerate(re.finditer(pattern, content)):
+        request_count = 0
+
+        # Pattern 1: Structured format [REQUEST_FIGURE: type="..." topic="..."]
+        structured_pattern = r'\[REQUEST_FIGURE:\s*type="([^"]+)"\s*topic="([^"]+)"\]'
+        for match in re.finditer(structured_pattern, content):
             figure_requests.append(FigureRequest(
-                placeholder_id=f"{section_name.replace(' ', '_')}_{i}",
+                placeholder_id=f"{section_name.replace(' ', '_')}_{request_count}",
                 figure_type=match.group(1),
                 topic=match.group(2),
                 context=section_name,
             ))
-        
+            request_count += 1
+
+        # Pattern 2: Simple format [Figure: description] - fallback when LLM ignores structured format
+        simple_pattern = r'\[Figure:\s*([^\]]+)\]'
+        for match in re.finditer(simple_pattern, content):
+            description = match.group(1).strip()
+            # Infer figure type from description keywords
+            desc_lower = description.lower()
+            if any(kw in desc_lower for kw in ['intraoperative', 'surgical field', 'operative']):
+                fig_type = 'intraoperative'
+            elif any(kw in desc_lower for kw in ['anatomy', 'anatomical', 'structure']):
+                fig_type = 'anatomy'
+            elif any(kw in desc_lower for kw in ['mri', 'ct', 'radiograph', 'imaging', 'scan']):
+                fig_type = 'imaging'
+            elif any(kw in desc_lower for kw in ['diagram', 'schematic', 'illustration']):
+                fig_type = 'illustration'
+            else:
+                fig_type = 'surgical_diagram'
+
+            figure_requests.append(FigureRequest(
+                placeholder_id=f"{section_name.replace(' ', '_')}_{request_count}",
+                figure_type=fig_type,
+                topic=description,
+                context=section_name,
+            ))
+            request_count += 1
+
         return content, figure_requests
 
     async def _verify(self, result: SynthesisResult) -> SynthesisResult:
