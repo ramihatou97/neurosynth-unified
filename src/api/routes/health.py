@@ -184,7 +184,40 @@ async def health_check(
         )
         if overall_status == "healthy":
             overall_status = "degraded"
-    
+
+    # Circuit breaker health (Claude and embeddings)
+    try:
+        from src.rag.engine import claude_breaker
+        from src.ingest.embeddings import get_embedding_circuit_health
+
+        # Claude circuit breaker
+        claude_status = "healthy" if claude_breaker.is_closed else "degraded"
+        components["circuit_claude"] = ComponentStatus(
+            status=claude_status,
+            details={
+                "state": claude_breaker.state.value,
+                "consecutive_failures": claude_breaker.stats.consecutive_failures,
+                "total_calls": claude_breaker.stats.total_calls,
+                "rejected_calls": claude_breaker.stats.rejected_calls,
+            }
+        )
+        if claude_status != "healthy" and overall_status == "healthy":
+            overall_status = "degraded"
+
+        # Embedding circuit breakers
+        emb_circuits = get_embedding_circuit_health()
+        for name, circuit_info in emb_circuits.items():
+            status = "healthy" if circuit_info["healthy"] else "degraded"
+            components[f"circuit_{name}"] = ComponentStatus(
+                status=status,
+                details=circuit_info["stats"]
+            )
+            if status != "healthy" and overall_status == "healthy":
+                overall_status = "degraded"
+
+    except ImportError as e:
+        logger.debug(f"Circuit breaker health check skipped: {e}")
+
     return HealthResponse(
         status=overall_status,
         version=settings.api_version,

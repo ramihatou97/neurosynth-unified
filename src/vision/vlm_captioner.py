@@ -67,8 +67,10 @@ class VLMConfig:
     max_tokens: int = 500
     
     # Timeouts (seconds)
-    request_timeout: float = 60.0
-    total_timeout: float = 120.0
+    # Increased to handle large medical images and complex captions
+    request_timeout: float = 120.0   # asyncio wrapper timeout
+    total_timeout: float = 180.0     # total operation timeout
+    http_timeout: float = 600.0      # httpx client timeout (10 min for large images)
     
     # Retry settings
     max_retries: int = 3
@@ -218,11 +220,24 @@ class VLMCaptioner:
     
     @property
     def client(self):
-        """Lazy-init Anthropic client."""
+        """Lazy-init Anthropic client with configured timeout."""
         if self._client is None:
             try:
                 from anthropic import Anthropic
-                self._client = Anthropic(api_key=self.api_key)
+                import httpx
+
+                # Configure httpx timeout for large image processing
+                # This prevents ReadTimeout errors on complex medical images
+                timeout = httpx.Timeout(
+                    connect=5.0,                      # connection timeout
+                    read=self.config.http_timeout,    # read timeout (long for images)
+                    write=self.config.http_timeout,   # write timeout
+                    pool=self.config.http_timeout     # pool timeout
+                )
+                self._client = Anthropic(
+                    api_key=self.api_key,
+                    timeout=timeout
+                )
             except ImportError:
                 raise ImportError("anthropic package required: pip install anthropic")
         return self._client

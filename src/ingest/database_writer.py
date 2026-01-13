@@ -231,15 +231,19 @@ class PipelineDatabaseWriter:
                 # Step 5: Update document stats (within transaction)
                 await self._update_document_stats_tx(conn, doc_id)
 
-                # Step 6: Refresh materialized views (for search performance)
-                await self._refresh_materialized_views_tx(conn)
-
                 logger.info(f"Transaction committed: document {doc_id} written successfully")
 
             except Exception as e:
                 # Transaction will auto-rollback, but log the error
                 logger.error(f"Transaction rolled back due to error: {e}")
                 raise
+
+        # Step 6: Refresh materialized views (outside transaction - non-critical)
+        # This runs in a separate connection to avoid transaction abort issues
+        try:
+            await self._refresh_materialized_views()
+        except Exception as e:
+            logger.warning(f"Materialized view refresh failed (non-fatal): {e}")
 
         # Step 7: Optional file export (outside transaction - non-critical)
         if self.export_files and self.export_dir:
@@ -336,6 +340,13 @@ class PipelineDatabaseWriter:
                     embedding = embedding.tolist()
                 embedding = '[' + ','.join(str(float(x)) for x in embedding) + ']'
 
+            # Prepare summary_embedding for pgvector (1024d)
+            summary_embedding = chunk_data.get('summary_embedding')
+            if summary_embedding:
+                if isinstance(summary_embedding, np.ndarray):
+                    summary_embedding = summary_embedding.tolist()
+                summary_embedding = '[' + ','.join(str(float(x)) for x in summary_embedding) + ']'
+
             records.append((
                 new_id,
                 doc_id,
@@ -349,23 +360,32 @@ class PipelineDatabaseWriter:
                 chunk_data.get('chunk_type'),
                 chunk_data.get('specialty'),
                 embedding,
+                summary_embedding,  # Summary embedding for multi-index retrieval
                 chunk_data.get('cuis', []),
                 json.dumps(chunk_data.get('entities', [])),
                 json.dumps(chunk_data.get('metadata', {})),
+                # Quality scores (4 dimensions + orphan flag)
+                chunk_data.get('readability_score', 0.0),
+                chunk_data.get('coherence_score', 0.0),
+                chunk_data.get('completeness_score', 0.0),
+                chunk_data.get('type_specific_score', 0.0),
+                chunk_data.get('is_orphan', False),
             ))
 
             if on_progress and (i + 1) % 50 == 0:
                 on_progress("chunks", i + 1, len(chunks))
 
-        # Batch insert using executemany (schema v4.1 aligned)
+        # Batch insert using executemany (schema v4.1 aligned + summary_embedding + quality scores)
         await conn.executemany(
             """
             INSERT INTO chunks (
                 id, document_id, content, content_hash, summary, page_number, chunk_index,
-                start_char, end_char, chunk_type, specialty, embedding, cuis,
-                entities, metadata
+                start_char, end_char, chunk_type, specialty, embedding, summary_embedding, cuis,
+                entities, metadata,
+                readability_score, coherence_score, completeness_score, type_specific_score, is_orphan
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13, $14::jsonb, $15::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::vector, $13::vector, $14, $15::jsonb, $16::jsonb,
+                    $17, $18, $19, $20, $21)
             """,
             records
         )
@@ -430,7 +450,10 @@ class PipelineDatabaseWriter:
                 image_data.get('caption_summary'),
                 embedding,
                 caption_embedding,
-                json.dumps(image_data.get('metadata', {}))
+                json.dumps(image_data.get('metadata', {})),
+                # Figure ID and quality score
+                image_data.get('figure_id'),
+                image_data.get('quality_score'),
             ))
 
             if on_progress and (i + 1) % 20 == 0:
@@ -438,16 +461,17 @@ class PipelineDatabaseWriter:
 
         # Schema: id, document_id, file_path, file_name, content_hash, width, height, format,
         # page_number, image_index, image_type, is_decorative, vlm_caption, caption_summary,
-        # embedding (512d), caption_embedding (1024d), metadata
+        # embedding (512d), caption_embedding (1024d), metadata, figure_id, quality_score
         await conn.executemany(
             """
             INSERT INTO images (
                 id, document_id, file_path, file_name, content_hash, width, height, format,
                 page_number, image_index, image_type, is_decorative, vlm_caption,
-                caption_summary, embedding, caption_embedding, metadata
+                caption_summary, embedding, caption_embedding, metadata,
+                figure_id, quality_score
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                    $15::vector, $16::vector, $17::jsonb)
+                    $15::vector, $16::vector, $17::jsonb, $18, $19)
             """,
             records
         )
@@ -678,6 +702,19 @@ class PipelineDatabaseWriter:
             # Log but don't fail - view refresh is an optimization, not critical
             logger.warning(f"Failed to refresh materialized views: {e}")
 
+    async def _refresh_materialized_views(self) -> None:
+        """
+        Refresh materialized views in a separate transaction.
+
+        Called outside the main document write transaction to avoid
+        transaction abort issues. Gets its own connection.
+        """
+        try:
+            async with self._db.transaction() as conn:
+                await self._refresh_materialized_views_tx(conn)
+        except Exception as e:
+            logger.warning(f"Failed to refresh materialized views: {e}")
+
     # =========================================================================
     # Legacy Internal Methods (for backward compatibility)
     # These call the _tx versions with a new connection when not in a transaction
@@ -772,17 +809,25 @@ class PipelineDatabaseWriter:
         
         data['specialty'] = getattr(chunk, 'specialty', None)
         
-        # Embedding
+        # Embedding (text_embedding or legacy embedding)
         embedding = getattr(chunk, 'text_embedding', None)
         if embedding is None:
             embedding = getattr(chunk, 'embedding', None)
-            
+
         if embedding is not None:
             if isinstance(embedding, np.ndarray):
                 data['embedding'] = embedding.tolist()
             else:
                 data['embedding'] = list(embedding)
-        
+
+        # Summary embedding (for multi-index retrieval)
+        summary_embedding = getattr(chunk, 'summary_embedding', None)
+        if summary_embedding is not None:
+            if isinstance(summary_embedding, np.ndarray):
+                data['summary_embedding'] = summary_embedding.tolist()
+            else:
+                data['summary_embedding'] = list(summary_embedding)
+
         # UMLS
         cuis = getattr(chunk, 'cuis', [])
         if isinstance(cuis, set):
@@ -811,6 +856,13 @@ class PipelineDatabaseWriter:
 
         # Summary (generated by ContentSummarizer)
         data['summary'] = getattr(chunk, 'summary', None)
+
+        # Quality scores (4 dimensions from ChunkQualityScorer)
+        data['readability_score'] = getattr(chunk, 'readability_score', 0.0) or 0.0
+        data['coherence_score'] = getattr(chunk, 'coherence_score', 0.0) or 0.0
+        data['completeness_score'] = getattr(chunk, 'completeness_score', 0.0) or 0.0
+        data['type_specific_score'] = getattr(chunk, 'type_specific_score', 0.0) or 0.0
+        data['is_orphan'] = getattr(chunk, 'is_orphan', False) or False
 
         return data
     
@@ -881,12 +933,18 @@ class PipelineDatabaseWriter:
         # Triage info
         data['triage_skipped'] = getattr(image, 'triage_skipped', False)
         data['triage_reason'] = getattr(image, 'triage_reason', None)
-        
+
+        # Figure ID (extracted from VLM caption or PDF caption)
+        data['figure_id'] = getattr(image, 'figure_id', None)
+
+        # Quality score for image/caption
+        data['quality_score'] = getattr(image, 'quality_score', None)
+
         # Metadata
         data['metadata'] = getattr(image, 'metadata', {}) or {}
-        
+
         return data
-    
+
     def _extract_link_data(self, link) -> Dict[str, Any]:
         """Extract data from LinkResult object."""
         if isinstance(link, dict):

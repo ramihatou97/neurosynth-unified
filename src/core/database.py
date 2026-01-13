@@ -32,7 +32,7 @@ except ImportError:
 
 from src.shared.models import (
     Document, Page, SemanticChunk, ExtractedImage, ExtractedTable,
-    DocumentStatus, ChunkType, ImageType, NeuroEntity, SearchResult
+    DocumentStatus, ChunkType, ImageType, NeuroEntity, SearchResult, LinkResult
 )
 
 logger = logging.getLogger(__name__)
@@ -413,23 +413,26 @@ class NeuroDatabase:
             
             text_emb = chunk.text_embedding.tolist() if chunk.text_embedding is not None else None
             fused_emb = chunk.fused_embedding.tolist() if chunk.fused_embedding is not None else None
-            
+            summary_emb = chunk.summary_embedding.tolist() if chunk.summary_embedding is not None else None
+
             # Validate embedding dimensions
             if text_emb and self._embedding_dim and len(text_emb) != self._embedding_dim:
                 raise DimensionMismatchError(
                     f"Expected {self._embedding_dim} dimensions, got {len(text_emb)}. "
                     f"Update schema or use matching embedding model."
                 )
-            
+
             await conn.execute("""
                 INSERT INTO chunks (
                     id, document_id, content, title, chunk_type,
                     page_start, page_end, section_path,
                     entity_names, entities_json, specialty_tags,
                     figure_refs, table_refs, image_ids, keywords,
-                    text_embedding, fused_embedding, summary
+                    text_embedding, fused_embedding, summary, summary_embedding,
+                    readability_score, coherence_score, completeness_score, type_specific_score
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                    $20, $21, $22, $23
                 )
             """,
                 UUID(chunk.id), UUID(chunk.document_id), chunk.content, chunk.title,
@@ -437,7 +440,9 @@ class NeuroDatabase:
                 chunk.section_path, chunk.entity_names, json.dumps(entities_json),
                 chunk.specialty_tags, chunk.figure_refs, chunk.table_refs,
                 chunk.image_ids, chunk.keywords, text_emb, fused_emb,
-                chunk.summary
+                chunk.summary, summary_emb,
+                chunk.readability_score, chunk.coherence_score,
+                chunk.completeness_score, chunk.type_specific_score
             )
     
     async def insert_chunks_batch(
@@ -462,26 +467,32 @@ class NeuroDatabase:
                 page_start, page_end, section_path,
                 entity_names, entities_json, specialty_tags,
                 figure_refs, table_refs, image_ids, keywords,
-                text_embedding, fused_embedding
+                text_embedding, fused_embedding, summary, summary_embedding,
+                readability_score, coherence_score, completeness_score, type_specific_score
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                $20, $21, $22, $23
             )
         """)
-        
+
         records = []
         for chunk in chunks:
             entities_json = [e.to_dict() for e in chunk.entities] if chunk.entities else []
             text_emb = chunk.text_embedding.tolist() if chunk.text_embedding is not None else None
             fused_emb = chunk.fused_embedding.tolist() if chunk.fused_embedding is not None else None
-            
+            summary_emb = chunk.summary_embedding.tolist() if chunk.summary_embedding is not None else None
+
             records.append((
                 UUID(chunk.id), UUID(chunk.document_id), chunk.content, chunk.title,
                 chunk.chunk_type.value, chunk.page_start, chunk.page_end,
                 chunk.section_path, chunk.entity_names, json.dumps(entities_json),
                 chunk.specialty_tags, chunk.figure_refs, chunk.table_refs,
-                chunk.image_ids, chunk.keywords, text_emb, fused_emb
+                chunk.image_ids, chunk.keywords, text_emb, fused_emb,
+                chunk.summary, summary_emb,
+                chunk.readability_score, chunk.coherence_score,
+                chunk.completeness_score, chunk.type_specific_score
             ))
-        
+
         await stmt.executemany(records)
     
     async def get_document_chunks(self, doc_id: str) -> List[SemanticChunk]:
@@ -600,7 +611,57 @@ class NeuroDatabase:
                 table.markdown_content, table.raw_text,
                 table.table_type, table.title, table.chunk_ids
             )
-    
+
+    async def insert_links(
+        self,
+        links: List[LinkResult],
+        conn: "asyncpg.Connection" = None
+    ):
+        """
+        Batch insert chunk-image links.
+
+        Args:
+            links: List of LinkResult objects from TriPassLinker
+            conn: Optional connection (for transaction context)
+        """
+        conn = conn or self._pool
+
+        if not links:
+            return
+
+        from uuid import uuid4
+        import json as json_module
+
+        records = []
+        for link in links:
+            # Extract details for metadata
+            details = link.details if hasattr(link, 'details') else {}
+            metadata = json_module.dumps(details) if details else '{}'
+
+            records.append((
+                uuid4(),
+                UUID(link.chunk_id),
+                UUID(link.image_id),
+                link.match_type,  # link_type
+                link.strength,    # score
+                details.get('proximity_score'),
+                details.get('semantic_score'),
+                details.get('cui_overlap_score'),
+                metadata
+            ))
+
+        await conn.executemany("""
+            INSERT INTO links (
+                id, chunk_id, image_id, link_type, score,
+                proximity_score, semantic_score, cui_overlap_score, metadata
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            ON CONFLICT (chunk_id, image_id) DO UPDATE SET
+                score = EXCLUDED.score,
+                link_type = EXCLUDED.link_type
+        """, records)
+
+        logger.info(f"Inserted {len(records)} chunk-image links")
+
     # =========================================================================
     # SEARCH OPERATIONS
     # =========================================================================

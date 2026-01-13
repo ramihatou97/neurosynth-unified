@@ -34,9 +34,26 @@ logger = logging.getLogger(__name__)
 # Job Store Integration
 # =============================================================================
 
+async def _get_job_store_async():
+    """Get the initialized job store (async, Redis-backed if available)."""
+    from src.ingest.job_store import get_job_store
+    return await get_job_store()
+
+
 def _get_job_store():
-    """Get the global job store from ingest routes."""
+    """
+    Get the global job store from ingest routes.
+
+    DEPRECATED: Use _get_job_store_async() for proper Redis support.
+    This sync version only works if job store was already initialized
+    by a previous ingest route call.
+    """
     from src.api.routes.ingest import _job_store
+    if _job_store is None:
+        logger.warning(
+            "Job store not initialized - library ingest may not persist to Redis. "
+            "Call any ingest endpoint first, or use _get_job_store_async()."
+        )
     return _job_store
 
 
@@ -117,7 +134,7 @@ async def create_ingest_jobs(
     Returns:
         Tuple of (batch_id, document_jobs, chapter_jobs)
     """
-    job_store = _get_job_store()
+    job_store = await _get_job_store_async()
     batch_id = _get_batch_id()
 
     document_jobs = []
@@ -136,7 +153,7 @@ async def create_ingest_jobs(
             continue
 
         job_id = f"lib-doc-{uuid.uuid4().hex[:8]}"
-        job_store.create_job(job_id, doc.file_name)
+        await job_store.create_job_async(job_id, doc.file_name)
 
         # Queue for processing
         document_jobs.append({
@@ -171,7 +188,7 @@ async def create_ingest_jobs(
                 continue
 
             job_id = f"lib-ch-{uuid.uuid4().hex[:8]}"
-            job_store.create_job(job_id, f"{doc.file_name}:{chapter.title}")
+            await job_store.create_job_async(job_id, f"{doc.file_name}:{chapter.title}")
 
             chapter_jobs.append({
                 "job_id": job_id,
@@ -215,7 +232,7 @@ async def _process_library_batch(
     from src.ingest.config import UnifiedPipelineConfig
     from src.database.connection import get_connection_string
 
-    job_store = _get_job_store()
+    job_store = await _get_job_store_async()
     connection_string = get_connection_string()
 
     logger.info(f"Starting library batch {batch_id}: {len(document_jobs)} docs, {len(chapter_jobs)} chapters")
@@ -233,7 +250,7 @@ async def _process_library_batch(
             )
         except Exception as e:
             logger.exception(f"Document job {job_id} failed: {e}")
-            job_store.fail_job(job_id, str(e))
+            await job_store.fail_job_async(job_id, str(e))
 
     # Process chapters (extract pages first)
     temp_files = []
@@ -273,7 +290,7 @@ async def _process_library_batch(
                 )
             except Exception as e:
                 logger.exception(f"Chapter job {job_id} failed: {e}")
-                job_store.fail_job(job_id, str(e))
+                await job_store.fail_job_async(job_id, str(e))
 
     finally:
         # Clean up temp files
@@ -310,7 +327,7 @@ async def _process_single_document(
     from src.ingest.unified_pipeline import UnifiedPipeline
     from src.ingest.config import UnifiedPipelineConfig
 
-    job_store = _get_job_store()
+    job_store = await _get_job_store_async()
 
     try:
         # Update to processing
@@ -474,7 +491,7 @@ async def get_ingestion_progress(batch_id: str) -> Dict[str, Any]:
     Returns:
         Batch status with individual job statuses
     """
-    job_store = _get_job_store()
+    job_store = await _get_job_store_async()
 
     # Find all jobs for this batch (jobs are prefixed with lib-doc- or lib-ch-)
     batch_jobs = []

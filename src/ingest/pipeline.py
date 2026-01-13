@@ -26,11 +26,21 @@ import hashlib
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Callable, Tuple, Set, AsyncIterator
+from typing import List, Optional, Callable, Tuple, Set, AsyncIterator, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
+
+# Load environment variables from .env file
+# This ensures VOYAGE_API_KEY and other secrets are available
+# even when running outside the API context
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, rely on system environment
 
 try:
     import fitz  # PyMuPDF
@@ -638,12 +648,20 @@ class NeuroIngestPipeline:
         document = None
         
         try:
-            # Create document record
+            # Create document record with title tracking
+            title, title_info = self._extract_title(doc, pdf_path)
+            ingestion_warnings = title_info.get("warnings", [])
+
             document = Document.create(
                 file_path=pdf_path,
                 content_hash=content_hash,
-                title=self._extract_title(doc, pdf_path)
+                title=title
             )
+            # Store title extraction metadata
+            document.extraction_metrics = {
+                "title_source": title_info.get("source"),
+                "metadata_title": title_info.get("metadata_title"),
+            }
             document.page_count = len(doc)
             document.status = DocumentStatus.EXTRACTING
             
@@ -670,7 +688,24 @@ class NeuroIngestPipeline:
             full_text = "\n".join(p.content for p in pages)
             document.specialty = self._detect_specialty(full_text)
             document.authority_score = self._compute_authority(pdf_path, document.title)
-            
+
+            # Validate title against content (detect mislabeling)
+            content_warnings = self._validate_title_against_content(document.title, full_text)
+            ingestion_warnings.extend(content_warnings)
+
+            # Log any content validation warnings
+            for warning in content_warnings:
+                severity = warning.get("severity", "warning")
+                msg = warning.get("message", "Unknown validation issue")
+                if severity == "critical":
+                    logger.error(f"MISLABELING DETECTED: {msg}")
+                else:
+                    logger.warning(f"Content validation: {msg}")
+
+            # Store warnings in extraction metrics
+            if ingestion_warnings:
+                document.extraction_metrics["ingestion_warnings"] = ingestion_warnings
+
             tracker.update(ProcessingStage.CHUNKING, 0.0, "Semantic chunking")
 
             # Stage 3: Semantic chunking
@@ -684,25 +719,33 @@ class NeuroIngestPipeline:
             if self._umls_extractor:
                 await self._extract_umls_cuis(chunks, tracker)
 
+            # Stage 4: Generate embeddings BEFORE linking
+            # CRITICAL FIX: TriPassLinker Pass 3 requires caption_embedding to exist
+            # Moving this BEFORE linking ensures semantic similarity works correctly
+            if self.config.enable_embeddings:
+                document.status = DocumentStatus.EMBEDDING
+                await self._generate_embeddings(chunks, images, tracker, document)
+
             tracker.update(ProcessingStage.LINKING, 0.0, "Linking images to chunks")
 
-            # Stage 4: Link images to chunks (TriPassLinker returns chunks, images, and links)
+            # Stage 5: Link images to chunks (TriPassLinker returns chunks, images, and links)
+            # Now that embeddings exist, Pass 3 (semantic similarity) will work correctly
             chunks, images, links = self.linker.link(chunks, images)
 
             tracker.update(ProcessingStage.LINKING, 1.0, f"Linked {len(images)} images to {len(links)} link relationships")
 
-            # Stage 4.5: Build Knowledge Graph (GraphRAG)
+            # Stage 5.5: Build Knowledge Graph (GraphRAG)
             if self._knowledge_graph and self._entity_extractor:
                 await self._build_knowledge_graph(chunks, document, tracker)
 
-            # Stage 4.6: Extract Relations (spaCy NLP)
+            # Stage 5.6: Extract Relations (spaCy NLP)
             if self._relation_pipeline:
                 await self._extract_relations(chunks, tracker)
 
-            # Stage 5: Generate embeddings
+            # Stage 6: Fuse embeddings (uses link scores from TriPassLinker)
+            # Note: Embedding generation moved BEFORE linking (Stage 4)
+            # This step only does fusion with link weights now
             if self.config.enable_embeddings:
-                document.status = DocumentStatus.EMBEDDING
-                await self._generate_embeddings(chunks, images, tracker, document)
                 chunks = self.fuser.fuse_embeddings(chunks, images)
 
             # Stage 8.5: Generate brief summaries for image captions
@@ -719,6 +762,8 @@ class NeuroIngestPipeline:
                     await self.database.insert_images(images, conn)
                     if tables:
                         await self.database.insert_tables(tables, conn)
+                    if links:
+                        await self.database.insert_links(links, conn)
             
             # Mark complete
             document.status = DocumentStatus.READY
@@ -733,6 +778,18 @@ class NeuroIngestPipeline:
             duration = (datetime.now() - start_time).total_seconds()
 
             # Collect metrics for monitoring
+            # Build extraction metrics including any warnings
+            pipeline_extraction_metrics = {
+                "sections": len(sections),
+                "ocr_pages": ocr_pages,
+                "specialty": document.specialty,
+                "authority_score": document.authority_score,
+                "title_source": document.extraction_metrics.get("title_source") if document.extraction_metrics else None,
+            }
+            # Include ingestion warnings if any were collected
+            if ingestion_warnings:
+                pipeline_extraction_metrics["ingestion_warnings"] = ingestion_warnings
+
             result = PipelineResult(
                 document=document,
                 page_count=len(pages),
@@ -745,12 +802,7 @@ class NeuroIngestPipeline:
                 images=images,
                 tables=tables,
                 links=links if 'links' in dir() else [],
-                extraction_metrics={
-                    "sections": len(sections),
-                    "ocr_pages": ocr_pages,
-                    "specialty": document.specialty,
-                    "authority_score": document.authority_score
-                }
+                extraction_metrics=pipeline_extraction_metrics
             )
 
             metrics = get_metrics_collector()
@@ -1096,6 +1148,9 @@ class NeuroIngestPipeline:
         total_entities = 0
         total_relations = 0
 
+        # Collect entities for database persistence
+        entities_to_persist = set()  # Use set to dedupe by normalized name
+
         for idx, chunk in enumerate(chunks):
             # Extract entities if not already present
             if not chunk.entities:
@@ -1106,6 +1161,8 @@ class NeuroIngestPipeline:
             for entity in chunk.entities:
                 self._knowledge_graph.add_entity(entity, chunk.id, document.id)
                 total_entities += 1
+                # Collect for DB persistence
+                entities_to_persist.add((entity.normalized, entity.category))
 
             # Phase 4.1: Add UMLS entities to knowledge graph
             # Creates additional nodes for UMLS-linked concepts with CUIs
@@ -1145,6 +1202,38 @@ class NeuroIngestPipeline:
                     0.5 + progress * 0.5,  # Second half of linking stage
                     f"Knowledge graph: {total_entities} entities, {total_relations} relations"
                 )
+
+        # Persist entities to PostgreSQL for Knowledge Graph API
+        logger.info(f"Entity persistence check: database={self.database is not None}, entities={len(entities_to_persist)}")
+        if self.database and entities_to_persist:
+            logger.info(f"Persisting {len(entities_to_persist)} entities to PostgreSQL...")
+            try:
+                async with self.database.pool.acquire() as conn:
+                    persisted_count = 0
+                    # Batch insert entities, checking for existing by name
+                    for name, category in entities_to_persist:
+                        # Check if entity already exists by name
+                        existing = await conn.fetchrow(
+                            "SELECT id FROM entities WHERE name = $1 LIMIT 1", name
+                        )
+                        if existing:
+                            # Update mention count
+                            await conn.execute("""
+                                UPDATE entities SET
+                                    mention_count = mention_count + 1,
+                                    updated_at = NOW()
+                                WHERE id = $1
+                            """, existing['id'])
+                        else:
+                            # Insert new entity
+                            await conn.execute("""
+                                INSERT INTO entities (name, category, source)
+                                VALUES ($1, $2, 'knowledge_graph')
+                            """, name, category or 'extracted')
+                            persisted_count += 1
+                logger.info(f"Persisted {persisted_count} new entities to database (total: {len(entities_to_persist)})")
+            except Exception as e:
+                logger.warning(f"Failed to persist entities to database: {e}")
 
         # Save knowledge graph
         try:
@@ -1293,7 +1382,25 @@ class NeuroIngestPipeline:
 
             for chunk, emb in zip(chunks, embeddings):
                 chunk.text_embedding = emb
-        
+
+        # Summary embeddings (for multi-index retrieval)
+        if self.text_embedder and chunks:
+            chunks_with_summaries = [c for c in chunks if c.summary]
+            if chunks_with_summaries:
+                tracker.update(
+                    ProcessingStage.TEXT_EMBEDDING,
+                    0.85,  # At 85% progress
+                    f"Embedding {len(chunks_with_summaries)} summaries"
+                )
+
+                summary_texts = [c.summary for c in chunks_with_summaries]
+                summary_embeddings = await self.text_embedder.embed_batch(summary_texts)
+
+                for chunk, emb in zip(chunks_with_summaries, summary_embeddings):
+                    chunk.summary_embedding = emb
+
+                logger.info(f"Summary embeddings complete: {len(chunks_with_summaries)} summaries embedded")
+
         # Image embeddings
         if self.image_embedder and images:
             # Filter to meaningful images
@@ -1391,6 +1498,13 @@ class NeuroIngestPipeline:
                         img.vlm_caption = result.caption
                         img.vlm_image_type = result.image_type.value
                         logger.debug(f"VLM caption for {img.content_hash}: {result.caption[:100]}...")
+
+                        # Extract figure ID from VLM caption if not already set
+                        if not img.figure_id and result.caption:
+                            fig_id = self._extract_figure_id_from_caption(result.caption)
+                            if fig_id:
+                                img.figure_id = fig_id
+                                logger.debug(f"Extracted figure_id '{fig_id}' from VLM caption")
 
                 vlm_stats = self._vlm_captioner.get_stats()
                 logger.info(
@@ -1539,6 +1653,32 @@ class NeuroIngestPipeline:
 
         logger.info(f"VLM captions exported to: {json_file}")
 
+    def _extract_figure_id_from_caption(self, caption: str) -> Optional[str]:
+        """
+        Extract figure ID from VLM caption text.
+
+        Looks for patterns like "Figure 6.3", "Fig. 6A", "Plate 3.2" etc.
+        Returns normalized figure ID like 'fig_6.3' or 'fig_6a'.
+        """
+        if not caption:
+            return None
+
+        # Figure ID extraction patterns (ordered by specificity)
+        patterns = [
+            re.compile(r'(?:Figure|Fig\.?)\s*(\d+\.\d+[a-zA-Z]?)', re.I),  # "Figure 6.3A"
+            re.compile(r'(?:Figure|Fig\.?)\s*(\d+[a-zA-Z])', re.I),         # "Figure 6A"
+            re.compile(r'(?:Figure|Fig\.?)\s*(\d+)', re.I),                  # "Figure 6"
+            re.compile(r'(?:Plate|Panel)\s*(\d+(?:\.\d+)?[a-zA-Z]?)', re.I), # "Plate 3.2"
+        ]
+
+        for pattern in patterns:
+            match = pattern.search(caption)
+            if match:
+                fig_num = match.group(1).lower()
+                return f"fig_{fig_num}"
+
+        return None
+
     def _compute_hash(self, file_path: Path) -> str:
         """Compute SHA256 hash of file content."""
         sha256 = hashlib.sha256()
@@ -1547,17 +1687,42 @@ class NeuroIngestPipeline:
                 sha256.update(chunk)
         return sha256.hexdigest()
     
-    def _extract_title(self, doc: "fitz.Document", path: Path) -> str:
-        """Extract document title."""
-        # Try PDF metadata
-        title = doc.metadata.get("title", "")
-        if title and len(title.strip()) > 5:
-            return title.strip()[:200]
-        
-        # Fall back to filename
+    def _extract_title(self, doc: "fitz.Document", path: Path) -> Tuple[str, Dict[str, Any]]:
+        """
+        Extract document title with source tracking.
+
+        Returns:
+            Tuple of (title_string, title_info_dict)
+            title_info contains: source, metadata_title, warnings
+        """
+        metadata_title = doc.metadata.get("title", "").strip()
+        title_info = {
+            "source": None,
+            "metadata_title": metadata_title or None,
+            "warnings": []
+        }
+
+        # Try PDF metadata first
+        if metadata_title and len(metadata_title) > 5:
+            title_info["source"] = "pdf_metadata"
+            logger.info(f"Using PDF metadata title: '{metadata_title[:50]}{'...' if len(metadata_title) > 50 else ''}'")
+            return metadata_title[:200], title_info
+
+        # Fall back to filename - log the reason
+        if not metadata_title:
+            warning_msg = f"PDF has no metadata title, using filename: {path.name}"
+            warning = {"type": "no_metadata_title", "message": warning_msg}
+        else:
+            warning_msg = f"PDF title too short ({len(metadata_title)} chars: '{metadata_title}'), using filename: {path.name}"
+            warning = {"type": "metadata_title_too_short", "message": warning_msg}
+
+        title_info["source"] = "filename"
+        title_info["warnings"].append(warning)
+        logger.warning(warning_msg)
+
         name = path.stem
         name = name.replace("_", " ").replace("-", " ")
-        return name
+        return name, title_info
     
     def _detect_specialty(self, text: str) -> str:
         """Detect neurosurgical subspecialty from text."""
@@ -1583,6 +1748,79 @@ class NeuroIngestPipeline:
                 return score
 
         return 1.0
+
+    def _validate_title_against_content(
+        self,
+        title: str,
+        full_text: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Validate that title keywords appear in document content.
+        Detect chapter number mismatches via figure references.
+
+        Returns:
+            List of warning dictionaries with type, severity, message, details
+        """
+        warnings = []
+
+        # 1. Title keyword validation
+        # Extract meaningful words (4+ chars) from title
+        title_words = set(re.findall(r'\b[A-Za-z]{4,}\b', title.lower()))
+        # Remove common/generic words
+        stop_words = {'chapter', 'section', 'part', 'the', 'and', 'for', 'with', 'from'}
+        title_words -= stop_words
+
+        if title_words:
+            text_lower = full_text.lower()
+            matches = sum(1 for w in title_words if w in text_lower)
+            match_ratio = matches / len(title_words)
+
+            if match_ratio < 0.3:  # Less than 30% of title keywords found
+                warnings.append({
+                    "type": "title_content_mismatch",
+                    "severity": "high",
+                    "message": f"Title keywords not found in content ({match_ratio:.0%} match). "
+                              f"Document may be mislabeled.",
+                    "details": {
+                        "title_words": list(title_words),
+                        "matches": matches,
+                        "match_ratio": round(match_ratio, 2)
+                    }
+                })
+
+        # 2. Chapter number validation via figure references
+        # Extract chapter number from title (e.g., "Chapter 5" -> 5)
+        title_chapter_match = re.search(r'Chapter\s*(\d+)', title, re.IGNORECASE)
+        if title_chapter_match:
+            expected_chapter = int(title_chapter_match.group(1))
+
+            # Find figure references in content (Fig 6.1, Figure 5.2, Figs. 6.3, etc.)
+            fig_refs = re.findall(r'Fig(?:ure|s)?\.?\s*(\d+)\.\d+', full_text)
+            if fig_refs:
+                fig_chapters = [int(c) for c in fig_refs]
+                # Find most common chapter in figure references
+                chapter_counts = {}
+                for c in fig_chapters:
+                    chapter_counts[c] = chapter_counts.get(c, 0) + 1
+                most_common_chapter = max(chapter_counts, key=chapter_counts.get)
+                most_common_count = chapter_counts[most_common_chapter]
+
+                if most_common_chapter != expected_chapter and most_common_count >= 3:
+                    warnings.append({
+                        "type": "chapter_mismatch",
+                        "severity": "critical",
+                        "message": f"Title indicates Chapter {expected_chapter} but content contains "
+                                  f"Figure {most_common_chapter}.x references ({most_common_count} times). "
+                                  f"Document appears to be Chapter {most_common_chapter}.",
+                        "details": {
+                            "title_chapter": expected_chapter,
+                            "detected_chapter": most_common_chapter,
+                            "figure_refs_count": len(fig_refs),
+                            "chapter_ref_counts": chapter_counts
+                        }
+                    })
+
+        return warnings
 
     def _generate_fallback_summary(self, content: str, title: Optional[str] = None) -> str:
         """

@@ -24,7 +24,39 @@ from pathlib import Path
 from typing import List, Optional, Callable
 import numpy as np
 
+# Load environment variables from .env file early
+# This ensures API keys are available when embedders are created
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, rely on system environment
+
+from src.utils.circuit_breaker import CircuitBreaker, CircuitOpenError
+
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# CIRCUIT BREAKERS FOR EXTERNAL APIS
+# =============================================================================
+
+# Circuit breaker for Voyage AI API
+voyage_breaker = CircuitBreaker(
+    name="voyage",
+    failure_threshold=5,      # Open after 5 consecutive failures
+    success_threshold=2,      # Close after 2 successes in half-open
+    reset_timeout=60.0,       # Try recovery after 60s
+    timeout=30.0              # Per-request timeout
+)
+
+# Circuit breaker for OpenAI Embeddings API
+openai_embeddings_breaker = CircuitBreaker(
+    name="openai_embeddings",
+    failure_threshold=5,
+    success_threshold=2,
+    reset_timeout=60.0,
+    timeout=30.0
+)
 
 
 class EmbeddingError(Exception):
@@ -64,6 +96,7 @@ class EmbeddingStats:
     successful_requests: int = 0
     failed_requests: int = 0
     retry_count: int = 0
+    partial_responses: int = 0  # API returned fewer embeddings than requested
     total_tokens: int = 0
     total_time_ms: float = 0.0
     total_latency_seconds: float = 0.0
@@ -227,78 +260,100 @@ class OpenAITextEmbedder(TextEmbedder):
         return self._stats
     
     async def embed(self, text: str) -> np.ndarray:
-        """Embed single text with retry."""
+        """Embed single text with retry and circuit breaker protection."""
         self._stats.total_requests += 1
-        
+
         async def _do_embed():
             response = await self._client.embeddings.create(
                 model=self._model,
                 input=text
             )
             return np.array(response.data[0].embedding, dtype=np.float32)
-        
+
         def _on_retry(attempt, exc):
             self._stats.retry_count += 1
-        
+
         try:
-            result = await retry_with_backoff(
-                _do_embed,
-                self._retry_config,
-                _on_retry
-            )
+            # Circuit breaker prevents hammering a down service
+            async with openai_embeddings_breaker:
+                result = await retry_with_backoff(
+                    _do_embed,
+                    self._retry_config,
+                    _on_retry
+                )
             self._stats.successful_requests += 1
             return result
+        except CircuitOpenError as e:
+            self._stats.failed_requests += 1
+            logger.warning(f"OpenAI Embeddings API circuit open, failing fast: {e}")
+            raise EmbeddingError(f"OpenAI Embeddings API unavailable (circuit open): {e}") from e
         except Exception as e:
             self._stats.failed_requests += 1
             raise EmbeddingError(f"Failed to embed text: {e}") from e
-    
+
     async def embed_batch(
         self,
         texts: List[str],
         on_progress: Optional[Callable[[int, int], None]] = None
     ) -> List[np.ndarray]:
         """
-        Embed multiple texts with retry and progress tracking.
-        
+        Embed multiple texts with retry, circuit breaker, and progress tracking.
+
         OpenAI supports batching natively (up to 2048 inputs).
         """
         if not texts:
             return []
-        
+
         BATCH_SIZE = 2000
         all_embeddings = []
         total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-        
+
         for batch_idx, i in enumerate(range(0, len(texts), BATCH_SIZE)):
             batch = texts[i:i + BATCH_SIZE]
             self._stats.total_requests += 1
-            
+
+            # Create closure with batch captured
+            current_batch = batch  # Capture for closure
+
             async def _do_batch():
                 response = await self._client.embeddings.create(
                     model=self._model,
-                    input=batch
+                    input=current_batch
                 )
                 sorted_data = sorted(response.data, key=lambda x: x.index)
                 return [
                     np.array(d.embedding, dtype=np.float32)
                     for d in sorted_data
                 ]
-            
+
             def _on_retry(attempt, exc):
                 self._stats.retry_count += 1
-            
+
             try:
-                embeddings = await retry_with_backoff(
-                    _do_batch,
-                    self._retry_config,
-                    _on_retry
-                )
+                # Circuit breaker prevents hammering a down service
+                async with openai_embeddings_breaker:
+                    embeddings = await retry_with_backoff(
+                        _do_batch,
+                        self._retry_config,
+                        _on_retry
+                    )
                 all_embeddings.extend(embeddings)
                 self._stats.successful_requests += 1
-                
+
                 if on_progress:
                     on_progress(batch_idx + 1, total_batches)
-                    
+
+            except CircuitOpenError as e:
+                self._stats.failed_requests += 1
+                logger.warning(f"OpenAI Embeddings API circuit open at batch {batch_idx}, failing fast: {e}")
+                # Return zeros for remaining batches when circuit is open
+                remaining_texts = len(texts) - len(all_embeddings)
+                all_embeddings.extend([
+                    np.zeros(self._dimension, dtype=np.float32)
+                    for _ in range(remaining_texts)
+                ])
+                break  # Don't try more batches when circuit is open
+
             except Exception as e:
                 self._stats.failed_requests += 1
                 logger.error(f"Batch {batch_idx} failed: {e}")
@@ -307,7 +362,7 @@ class OpenAITextEmbedder(TextEmbedder):
                     np.zeros(self._dimension, dtype=np.float32)
                     for _ in batch
                 ])
-        
+
         return all_embeddings
     
     async def embed_with_validation(
@@ -372,9 +427,9 @@ class VoyageTextEmbedder(TextEmbedder):
         return self._stats
     
     async def embed(self, text: str) -> np.ndarray:
-        """Embed single text with retry."""
+        """Embed single text with retry and circuit breaker protection."""
         self._stats.total_requests += 1
-        
+
         async def _do_embed():
             result = await self._client.embed(
                 texts=[text],
@@ -382,18 +437,24 @@ class VoyageTextEmbedder(TextEmbedder):
                 input_type="document"
             )
             return np.array(result.embeddings[0], dtype=np.float32)
-        
+
         def _on_retry(attempt, exc):
             self._stats.retry_count += 1
-        
+
         try:
-            result = await retry_with_backoff(
-                _do_embed,
-                self._retry_config,
-                _on_retry
-            )
+            # Circuit breaker prevents hammering a down service
+            async with voyage_breaker:
+                result = await retry_with_backoff(
+                    _do_embed,
+                    self._retry_config,
+                    _on_retry
+                )
             self._stats.successful_requests += 1
             return result
+        except CircuitOpenError as e:
+            self._stats.failed_requests += 1
+            logger.warning(f"Voyage API circuit open, failing fast: {e}")
+            raise EmbeddingError(f"Voyage API unavailable (circuit open): {e}") from e
         except Exception as e:
             self._stats.failed_requests += 1
             raise EmbeddingError(f"Failed to embed text: {e}") from e
@@ -404,24 +465,27 @@ class VoyageTextEmbedder(TextEmbedder):
         on_progress: Optional[Callable[[int, int], None]] = None
     ) -> List[np.ndarray]:
         """
-        Embed multiple texts with retry.
-        
+        Embed multiple texts with retry and circuit breaker protection.
+
         Voyage supports up to 128 texts per request.
         """
         if not texts:
             return []
-        
+
         BATCH_SIZE = 128
         all_embeddings = []
         total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-        
+
         for batch_idx, i in enumerate(range(0, len(texts), BATCH_SIZE)):
             batch = texts[i:i + BATCH_SIZE]
             self._stats.total_requests += 1
-            
+
+            # Create closure with batch captured
+            current_batch = batch  # Capture for closure
+
             async def _do_batch():
                 result = await self._client.embed(
-                    texts=batch,
+                    texts=current_batch,
                     model=self._model,
                     input_type="document"
                 )
@@ -429,22 +493,58 @@ class VoyageTextEmbedder(TextEmbedder):
                     np.array(e, dtype=np.float32)
                     for e in result.embeddings
                 ]
-            
+
             def _on_retry(attempt, exc):
                 self._stats.retry_count += 1
-            
+
             try:
-                embeddings = await retry_with_backoff(
-                    _do_batch,
-                    self._retry_config,
-                    _on_retry
-                )
+                # Circuit breaker prevents hammering a down service
+                async with voyage_breaker:
+                    embeddings = await retry_with_backoff(
+                        _do_batch,
+                        self._retry_config,
+                        _on_retry
+                    )
+
+                # Validate embedding count matches input count
+                # This prevents silent data loss when API returns partial results
+                expected_count = len(current_batch)
+                actual_count = len(embeddings)
+
+                if actual_count != expected_count:
+                    self._stats.partial_responses += 1
+                    logger.warning(
+                        f"Voyage API returned {actual_count} embeddings for {expected_count} texts "
+                        f"in batch {batch_idx}. {'Padding' if actual_count < expected_count else 'Truncating'} to match."
+                    )
+
+                    if actual_count < expected_count:
+                        # Pad with zero vectors for missing embeddings
+                        embeddings.extend([
+                            np.zeros(self._dimension, dtype=np.float32)
+                            for _ in range(expected_count - actual_count)
+                        ])
+                    else:
+                        # Truncate if API returned too many (unlikely but defensive)
+                        embeddings = embeddings[:expected_count]
+
                 all_embeddings.extend(embeddings)
                 self._stats.successful_requests += 1
-                
+
                 if on_progress:
                     on_progress(batch_idx + 1, total_batches)
-                    
+
+            except CircuitOpenError as e:
+                self._stats.failed_requests += 1
+                logger.warning(f"Voyage API circuit open at batch {batch_idx}, failing fast: {e}")
+                # Return zeros for remaining batches when circuit is open
+                remaining_texts = len(texts) - len(all_embeddings)
+                all_embeddings.extend([
+                    np.zeros(self._dimension, dtype=np.float32)
+                    for _ in range(remaining_texts)
+                ])
+                break  # Don't try more batches when circuit is open
+
             except Exception as e:
                 self._stats.failed_requests += 1
                 logger.error(f"Batch {batch_idx} failed: {e}")
@@ -452,7 +552,7 @@ class VoyageTextEmbedder(TextEmbedder):
                     np.zeros(self._dimension, dtype=np.float32)
                     for _ in batch
                 ])
-        
+
         return all_embeddings
 
 
@@ -911,3 +1011,27 @@ def create_image_embedder(
         return SubprocessBiomedCLIPEmbedder()
     else:
         raise ValueError(f"Unknown image embedder provider: {provider}")
+
+
+# =============================================================================
+# CIRCUIT BREAKER HEALTH
+# =============================================================================
+
+def get_embedding_circuit_health() -> dict:
+    """
+    Get health status of embedding circuit breakers.
+
+    Use in health endpoint:
+        from src.ingest.embeddings import get_embedding_circuit_health
+        @router.get("/health")
+        async def health():
+            return {
+                "status": "healthy",
+                "embedding_circuits": get_embedding_circuit_health()
+            }
+    """
+    from src.utils.circuit_breaker import get_circuit_health
+    return get_circuit_health({
+        "voyage": voyage_breaker,
+        "openai_embeddings": openai_embeddings_breaker,
+    })

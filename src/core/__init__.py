@@ -2,6 +2,16 @@
 NeuroSynth v2.0 - Core Module
 """
 
+from src.core.logging_config import (
+    configure_logging,
+    get_logger,
+    RequestLoggingMiddleware,
+    get_request_id,
+    set_request_id,
+    bind_user,
+    bind_document,
+)
+
 from src.shared.models import (
     Document,
     Page,
@@ -34,6 +44,14 @@ from .neuro_chunker import (
 from .database import NeuroDatabase
 
 __all__ = [
+    # Logging
+    "configure_logging",
+    "get_logger",
+    "RequestLoggingMiddleware",
+    "get_request_id",
+    "set_request_id",
+    "bind_user",
+    "bind_document",
     # Models
     "Document",
     "Page",

@@ -440,7 +440,10 @@ class ServiceContainer:
                     from src.rag import RAGEngine, RAGConfig
 
                     if self._search and settings.anthropic_api_key:
-                        config = RAGConfig(model=settings.claude_model)
+                        config = RAGConfig(
+                            model=settings.claude_model,
+                            use_graph_rag=False,  # Disabled: graph relations are imprecise
+                        )
                         self._rag = RAGEngine(
                             search_service=self._search,
                             api_key=settings.anthropic_api_key,

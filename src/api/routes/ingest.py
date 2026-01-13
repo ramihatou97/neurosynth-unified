@@ -4,8 +4,8 @@ NeuroSynth Unified - Ingest Routes
 
 Document ingestion API endpoints for PDF upload and processing.
 
-WARNING: Job state is stored in-memory only and will be lost on server restart.
-For production, migrate to Redis or database-backed job storage.
+Job state is persisted to Redis (if available) or falls back to in-memory storage.
+Configure Redis via REDIS_URL environment variable.
 """
 
 import asyncio
@@ -21,135 +21,43 @@ from enum import Enum
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from pydantic import BaseModel, Field
 
+from src.ingest.job_store import JobStore, BatchTracker, get_job_store, get_batch_tracker
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/ingest", tags=["Ingestion"])
 
 
 # =============================================================================
-# IN-MEMORY JOB STORE (for demo - use Redis in production)
-# WARNING: All state is lost on restart. Use database/Redis for production.
+# JOB STORE (Redis-backed with in-memory fallback)
 # =============================================================================
 
-class JobStore:
-    """
-    Simple in-memory job store with thread-safe operations.
-
-    WARNING: State is lost on server restart. For production deployments,
-    migrate to Redis or database-backed storage.
-    """
-
-    def __init__(self):
-        self.jobs: Dict[str, Dict[str, Any]] = {}
-        self.history: List[Dict[str, Any]] = []
-        self._lock = asyncio.Lock()
-
-    async def create_job_async(self, job_id: str, filename: str) -> Dict[str, Any]:
-        """Thread-safe job creation."""
-        async with self._lock:
-            return self._create_job_internal(job_id, filename)
-
-    def _create_job_internal(self, job_id: str, filename: str) -> Dict[str, Any]:
-        """Internal job creation (call within lock or synchronously)."""
-        job = {
-            "job_id": job_id,
-            "filename": filename,
-            "stage": "upload",
-            "progress": 0,
-            "status": "pending",
-            "current_operation": "Initializing...",
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-            "summary": None,
-            "error": None
-        }
-        self.jobs[job_id] = job
-        return job
-
-    def create_job(self, job_id: str, filename: str) -> Dict[str, Any]:
-        """Sync version for backward compatibility. Use create_job_async in async context."""
-        return self._create_job_internal(job_id, filename)
-
-    async def update_job_async(self, job_id: str, **kwargs) -> Optional[Dict[str, Any]]:
-        """Thread-safe job update."""
-        async with self._lock:
-            return self._update_job_internal(job_id, **kwargs)
-
-    def _update_job_internal(self, job_id: str, **kwargs) -> Optional[Dict[str, Any]]:
-        """Internal update (call within lock or synchronously)."""
-        if job_id in self.jobs:
-            self.jobs[job_id].update(kwargs)
-            self.jobs[job_id]["updated_at"] = datetime.now().isoformat()
-            return self.jobs[job_id]
-        return None
-
-    def update_job(self, job_id: str, **kwargs) -> Optional[Dict[str, Any]]:
-        """Sync version for backward compatibility."""
-        return self._update_job_internal(job_id, **kwargs)
-
-    async def get_job_async(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Thread-safe job retrieval."""
-        async with self._lock:
-            job = self.jobs.get(job_id)
-            return job.copy() if job else None
-
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Sync version for backward compatibility."""
-        return self.jobs.get(job_id)
-
-    async def complete_job_async(self, job_id: str, summary: Dict[str, Any]):
-        """Thread-safe job completion."""
-        async with self._lock:
-            self._complete_job_internal(job_id, summary)
-
-    def _complete_job_internal(self, job_id: str, summary: Dict[str, Any]):
-        """Internal completion (call within lock or synchronously)."""
-        if job_id in self.jobs:
-            job = self.jobs[job_id]
-            job["status"] = "completed"
-            job["stage"] = "complete"
-            job["progress"] = 100
-            job["current_operation"] = "Done"
-            job["summary"] = summary
-            job["updated_at"] = datetime.now().isoformat()
-            self.history.insert(0, job.copy())
-            if len(self.history) > 50:
-                self.history = self.history[:50]
-
-    def complete_job(self, job_id: str, summary: Dict[str, Any]):
-        """Sync version for backward compatibility."""
-        self._complete_job_internal(job_id, summary)
-
-    async def fail_job_async(self, job_id: str, error: str):
-        """Thread-safe job failure."""
-        async with self._lock:
-            self._fail_job_internal(job_id, error)
-
-    def _fail_job_internal(self, job_id: str, error: str):
-        """Internal failure (call within lock or synchronously)."""
-        if job_id in self.jobs:
-            job = self.jobs[job_id]
-            job["status"] = "failed"
-            job["error"] = error
-            job["updated_at"] = datetime.now().isoformat()
-            self.history.insert(0, job.copy())
-
-    def fail_job(self, job_id: str, error: str):
-        """Sync version for backward compatibility."""
-        self._fail_job_internal(job_id, error)
-
-    def cancel_job(self, job_id: str):
-        """Cancel a job. Note: not fully thread-safe in sync mode."""
-        if job_id in self.jobs:
-            self.jobs[job_id]["status"] = "cancelled"
-            self.jobs[job_id]["updated_at"] = datetime.now().isoformat()
-
-    def get_history(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get job history. Returns defensive copy to prevent external mutation."""
-        return [job.copy() for job in self.history[:limit]]
+# Global job store - initialized lazily on first use
+_job_store: Optional[JobStore] = None
 
 
-# Global job store
-_job_store = JobStore()
+async def _get_job_store() -> JobStore:
+    """Get or create the singleton job store."""
+    global _job_store
+    if _job_store is None:
+        _job_store = await get_job_store()
+    return _job_store
+
+
+def _get_job_store_sync() -> JobStore:
+    """Get job store synchronously (creates if needed but may not be fully initialized)."""
+    global _job_store
+    if _job_store is None:
+        _job_store = JobStore()
+        # Try to initialize in background
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(_job_store.initialize())
+            else:
+                loop.run_until_complete(_job_store.initialize())
+        except Exception:
+            pass  # Will use uninitialized (in-memory) mode
+    return _job_store
 
 
 # =============================================================================
@@ -176,6 +84,7 @@ class JobStatus(BaseModel):
     updated_at: str
     summary: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    warnings: List[Dict[str, Any]] = []  # Non-blocking validation warnings
 
 
 class HistoryItem(BaseModel):
@@ -203,9 +112,11 @@ async def process_document_task(
     from src.database.connection import get_connection_string
     import os
 
+    job_store = await _get_job_store()
+
     try:
         # Update to processing status
-        await _job_store.update_job_async(
+        await job_store.update_job_async(
             job_id,
             stage="initializing",
             progress=5,
@@ -292,7 +203,7 @@ async def process_document_task(
             stage_name = stage_name_map.get(raw_stage, raw_stage)
 
             # Use asyncio.create_task for thread-safe update from sync callback
-            asyncio.create_task(_job_store.update_job_async(
+            asyncio.create_task(job_store.update_job_async(
                 job_id,
                 stage=stage_name,
                 progress=overall,
@@ -303,7 +214,7 @@ async def process_document_task(
         pipeline = UnifiedPipeline(config=pipeline_config, on_progress=progress_callback)
         await pipeline.initialize()
 
-        await _job_store.update_job_async(
+        await job_store.update_job_async(
             job_id,
             stage="extraction",
             progress=10,
@@ -322,14 +233,14 @@ async def process_document_task(
         # CRITICAL FIX 1: Check for explicit pipeline errors
         if result.error:
             logger.error(f"Job {job_id} pipeline error: {result.error}")
-            await _job_store.fail_job_async(job_id, result.error)
+            await job_store.fail_job_async(job_id, result.error)
             return
 
         # CRITICAL FIX 2: Validate content was actually produced
         if result.chunk_count == 0 and result.image_count == 0:
             msg = "Pipeline completed but produced 0 chunks and 0 images. Check PDF content/encryption."
             logger.warning(f"Job {job_id}: {msg}")
-            await _job_store.fail_job_async(job_id, msg)
+            await job_store.fail_job_async(job_id, msg)
             return
 
         # SUCCESS: Create summary and complete job
@@ -342,12 +253,26 @@ async def process_document_task(
             "pages": result.total_pages
         }
 
-        await _job_store.complete_job_async(job_id, summary)
+        # Extract warnings from pipeline result (stored in extraction_metrics)
+        ingestion_warnings = []
+        if hasattr(result, 'extraction_metrics') and result.extraction_metrics:
+            ingestion_warnings = result.extraction_metrics.get('ingestion_warnings', [])
+        elif hasattr(result, 'document') and result.document:
+            doc = result.document
+            if hasattr(doc, 'extraction_metrics') and doc.extraction_metrics:
+                ingestion_warnings = doc.extraction_metrics.get('ingestion_warnings', [])
+
+        # Include warnings in summary for visibility
+        if ingestion_warnings:
+            summary["warnings"] = ingestion_warnings
+            logger.warning(f"Job {job_id} completed with {len(ingestion_warnings)} warning(s)")
+
+        await job_store.complete_job_async(job_id, summary)
         logger.info(f"Job {job_id} completed successfully: {summary}")
 
     except Exception as e:
         logger.exception(f"Job {job_id} failed with exception: {e}")
-        await _job_store.fail_job_async(job_id, str(e))
+        await job_store.fail_job_async(job_id, str(e))
 
     finally:
         # Cleanup temp file
@@ -408,8 +333,9 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    # Create job
-    _job_store.create_job(job_id, file.filename)
+    # Create job (use async store)
+    job_store = await _get_job_store()
+    await job_store.create_job_async(job_id, file.filename)
 
     # Config for processing
     config = {
@@ -440,7 +366,8 @@ async def upload_document(
 @router.get("/status/{job_id}", response_model=JobStatus)
 async def get_job_status(job_id: str):
     """Get the status of an ingestion job."""
-    job = _job_store.get_job(job_id)
+    job_store = await _get_job_store()
+    job = await job_store.get_job_async(job_id)
 
     if not job:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -451,7 +378,8 @@ async def get_job_status(job_id: str):
 @router.get("/history")
 async def get_ingestion_history(limit: int = 20):
     """Get recent ingestion history."""
-    history = _job_store.get_history(limit)
+    job_store = await _get_job_store()
+    history = await job_store.get_history_async(limit)
     return {
         "history": history,
         "total": len(history)
@@ -461,7 +389,8 @@ async def get_ingestion_history(limit: int = 20):
 @router.post("/{job_id}/cancel")
 async def cancel_job(job_id: str):
     """Cancel an in-progress ingestion job."""
-    job = _job_store.get_job(job_id)
+    job_store = await _get_job_store()
+    job = await job_store.get_job_async(job_id)
 
     if not job:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -469,7 +398,7 @@ async def cancel_job(job_id: str):
     if job["status"] == "completed":
         raise HTTPException(status_code=400, detail="Cannot cancel completed job")
 
-    _job_store.cancel_job(job_id)
+    await job_store.cancel_job_async(job_id)
 
     return {"status": "cancelled", "job_id": job_id}
 
@@ -545,160 +474,115 @@ class BatchStatusResponse(BaseModel):
 
 
 # =============================================================================
-# BATCH TRACKER
+# BATCH TRACKER (Redis-backed with in-memory fallback)
 # =============================================================================
 
-class BatchTracker:
+# Global batch tracker - initialized lazily on first use
+_batch_tracker: Optional[BatchTracker] = None
+
+
+async def _get_batch_tracker() -> BatchTracker:
+    """Get or create the singleton batch tracker."""
+    global _batch_tracker
+    if _batch_tracker is None:
+        _batch_tracker = await get_batch_tracker()
+    return _batch_tracker
+
+
+async def _get_batch_status_response(
+    batch_id: str,
+    batch_tracker: BatchTracker,
+    job_store: JobStore
+) -> Optional[BatchStatusResponse]:
     """
-    Tracks batch jobs containing multiple file uploads.
+    Get comprehensive batch status with all job statuses.
+    Helper function to build BatchStatusResponse from batch data.
     """
+    batch = await batch_tracker.get_batch(batch_id)
+    if not batch:
+        return None
 
-    def __init__(self):
-        self.batches: Dict[str, Dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
+    jobs = []
+    completed = 0
+    failed = 0
 
-    async def create_batch(
-        self,
-        batch_id: str,
-        job_infos: List[Dict[str, str]]
-    ) -> Dict:
-        """
-        Create a new batch containing multiple jobs.
+    for info in batch["job_infos"]:
+        job_id = info["job_id"]
+        job_status = await job_store.get_job_async(job_id)
 
-        Args:
-            batch_id: Unique batch identifier
-            job_infos: List of {job_id, filename, file_path} dicts
-        """
-        async with self._lock:
-            batch = {
-                "batch_id": batch_id,
-                "job_ids": [j["job_id"] for j in job_infos],
-                "job_infos": job_infos,
-                "status": BatchStatus.PENDING,
-                "current_index": 0,
-                "created_at": datetime.utcnow(),
-                "started_at": None,
-                "completed_at": None,
-                "cancelled": False
-            }
-            self.batches[batch_id] = batch
-            logger.info(f"Created batch {batch_id} with {len(job_infos)} files")
-            return batch
+        if job_status:
+            job_info = BatchJobInfo(
+                job_id=job_id,
+                filename=info["filename"],
+                status=job_status.get("status", "pending"),
+                progress=job_status.get("progress", 0),
+                current_stage=job_status.get("stage"),
+                error=job_status.get("error")
+            )
 
-    async def get_batch(self, batch_id: str) -> Optional[Dict]:
-        """Get batch info by ID."""
-        return self.batches.get(batch_id)
+            if job_status.get("status") == "completed":
+                completed += 1
+            elif job_status.get("status") == "failed":
+                failed += 1
+        else:
+            job_info = BatchJobInfo(
+                job_id=job_id,
+                filename=info["filename"],
+                status="pending"
+            )
 
-    async def update_batch_status(self, batch_id: str, status: BatchStatus):
-        """Update batch status."""
-        async with self._lock:
-            if batch_id in self.batches:
-                self.batches[batch_id]["status"] = status
-                if status == BatchStatus.PROCESSING and not self.batches[batch_id]["started_at"]:
-                    self.batches[batch_id]["started_at"] = datetime.utcnow()
-                elif status in (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.PARTIAL):
-                    self.batches[batch_id]["completed_at"] = datetime.utcnow()
+        jobs.append(job_info)
 
-    async def update_current_index(self, batch_id: str, index: int):
-        """Update which file is currently being processed."""
-        async with self._lock:
-            if batch_id in self.batches:
-                self.batches[batch_id]["current_index"] = index
+    # Calculate elapsed time
+    elapsed = None
+    started_at = batch.get("started_at")
+    completed_at = batch.get("completed_at")
 
-    async def cancel_batch(self, batch_id: str):
-        """Mark batch as cancelled."""
-        async with self._lock:
-            if batch_id in self.batches:
-                self.batches[batch_id]["cancelled"] = True
-                self.batches[batch_id]["status"] = BatchStatus.CANCELLED
+    if started_at:
+        # Handle both datetime objects and ISO strings
+        if isinstance(started_at, str):
+            try:
+                started_dt = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+            except ValueError:
+                started_dt = None
+        else:
+            started_dt = started_at
 
-    async def is_cancelled(self, batch_id: str) -> bool:
-        """Check if batch was cancelled."""
-        batch = self.batches.get(batch_id)
-        return batch["cancelled"] if batch else False
+        if isinstance(completed_at, str):
+            try:
+                end_dt = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+            except ValueError:
+                end_dt = datetime.utcnow()
+        else:
+            end_dt = completed_at or datetime.utcnow()
 
-    async def get_batch_status(
-        self,
-        batch_id: str,
-        job_store  # Reference to main JobStore for individual job statuses
-    ) -> Optional[BatchStatusResponse]:
-        """
-        Get comprehensive batch status with all job statuses.
-        """
-        batch = self.batches.get(batch_id)
-        if not batch:
-            return None
+        if started_dt:
+            elapsed = (end_dt - started_dt).total_seconds()
 
-        jobs = []
-        completed = 0
-        failed = 0
+    # Determine current file name
+    current_name = None
+    idx = batch.get("current_index", 0)
+    job_infos = batch.get("job_infos", [])
+    if 0 <= idx < len(job_infos):
+        current_name = job_infos[idx]["filename"]
 
-        for info in batch["job_infos"]:
-            job_id = info["job_id"]
-            job_status = job_store.get_job(job_id)
+    status_val = batch.get("status", "pending")
+    if hasattr(status_val, 'value'):
+        status_val = status_val.value
 
-            if job_status:
-                job_info = BatchJobInfo(
-                    job_id=job_id,
-                    filename=info["filename"],
-                    status=job_status.get("status", "pending"),
-                    progress=job_status.get("progress", 0),
-                    current_stage=job_status.get("stage"),
-                    error=job_status.get("error")
-                )
-
-                if job_status.get("status") == "completed":
-                    completed += 1
-                elif job_status.get("status") == "failed":
-                    failed += 1
-            else:
-                job_info = BatchJobInfo(
-                    job_id=job_id,
-                    filename=info["filename"],
-                    status="pending"
-                )
-
-            jobs.append(job_info)
-
-        # Calculate elapsed time
-        elapsed = None
-        if batch["started_at"]:
-            end_time = batch["completed_at"] or datetime.utcnow()
-            elapsed = (end_time - batch["started_at"]).total_seconds()
-
-        # Determine current file name
-        current_name = None
-        idx = batch["current_index"]
-        if 0 <= idx < len(batch["job_infos"]):
-            current_name = batch["job_infos"][idx]["filename"]
-
-        return BatchStatusResponse(
-            batch_id=batch_id,
-            status=batch["status"].value if isinstance(batch["status"], BatchStatus) else batch["status"],
-            total_files=len(batch["job_ids"]),
-            completed_files=completed,
-            failed_files=failed,
-            current_file_index=batch["current_index"],
-            current_file_name=current_name,
-            jobs=jobs,
-            started_at=batch["started_at"],
-            completed_at=batch["completed_at"],
-            elapsed_seconds=elapsed
-        )
-
-    def cleanup_old_batches(self, max_age_hours: int = 24):
-        """Remove old completed batches."""
-        cutoff = datetime.utcnow() - timedelta(hours=max_age_hours)
-        to_remove = [
-            bid for bid, batch in self.batches.items()
-            if batch.get("completed_at") and batch["completed_at"] < cutoff
-        ]
-        for bid in to_remove:
-            del self.batches[bid]
-
-
-# Global batch tracker
-_batch_tracker = BatchTracker()
+    return BatchStatusResponse(
+        batch_id=batch_id,
+        status=status_val,
+        total_files=len(batch.get("job_ids", [])),
+        completed_files=completed,
+        failed_files=failed,
+        current_file_index=batch.get("current_index", 0),
+        current_file_name=current_name,
+        jobs=jobs,
+        started_at=started_at if isinstance(started_at, datetime) else None,
+        completed_at=completed_at if isinstance(completed_at, datetime) else None,
+        elapsed_seconds=elapsed
+    )
 
 
 # =============================================================================
@@ -717,14 +601,17 @@ async def process_batch_task(
     """
     logger.info(f"Starting batch {batch_id} with {len(job_infos)} files")
 
-    await _batch_tracker.update_batch_status(batch_id, BatchStatus.PROCESSING)
+    batch_tracker = await _get_batch_tracker()
+    job_store = await _get_job_store()
+
+    await batch_tracker.update_batch_status(batch_id, BatchStatus.PROCESSING.value)
 
     completed = 0
     failed = 0
 
     for index, job_info in enumerate(job_infos):
         # Check for cancellation
-        if await _batch_tracker.is_cancelled(batch_id):
+        if await batch_tracker.is_cancelled(batch_id):
             logger.info(f"Batch {batch_id} was cancelled at file {index + 1}")
             break
 
@@ -734,7 +621,7 @@ async def process_batch_task(
         logger.info(f"[{index + 1}/{len(job_infos)}] Processing: {filename}")
 
         # Update current index
-        await _batch_tracker.update_current_index(batch_id, index)
+        await batch_tracker.update_current_index(batch_id, index)
 
         try:
             # Use existing document processing function
@@ -753,7 +640,7 @@ async def process_batch_task(
             logger.error(f"[{index + 1}/{len(job_infos)}] Failed: {filename} - {e}")
 
             # Update job status to failed
-            _job_store.update_job(job_id,
+            await job_store.update_job_async(job_id,
                 status="failed",
                 error=str(e),
                 progress=0
@@ -767,7 +654,7 @@ async def process_batch_task(
             await asyncio.sleep(BatchConfig.DELAY_BETWEEN_FILES)
 
     # Determine final batch status
-    if await _batch_tracker.is_cancelled(batch_id):
+    if await batch_tracker.is_cancelled(batch_id):
         final_status = BatchStatus.CANCELLED
     elif failed == len(job_infos):
         final_status = BatchStatus.FAILED
@@ -776,7 +663,7 @@ async def process_batch_task(
     else:
         final_status = BatchStatus.COMPLETED
 
-    await _batch_tracker.update_batch_status(batch_id, final_status)
+    await batch_tracker.update_batch_status(batch_id, final_status.value)
 
     logger.info(
         f"Batch {batch_id} finished: {completed} completed, {failed} failed, "
@@ -884,8 +771,9 @@ async def upload_batch(
             with open(file_path, "wb") as f:
                 f.write(content)
 
-            # Create job in JobStore
-            _job_store.create_job(job_id, filename)
+            # Create job in JobStore (use sync for background compatibility)
+            job_store = await _get_job_store()
+            await job_store.create_job_async(job_id, filename)
 
             job_infos.append({
                 "job_id": job_id,
@@ -896,7 +784,8 @@ async def upload_batch(
             })
 
         # Create batch
-        await _batch_tracker.create_batch(batch_id, job_infos)
+        batch_tracker = await _get_batch_tracker()
+        await batch_tracker.create_batch(batch_id, job_infos)
 
         # Start background processing
         background_tasks.add_task(
@@ -944,7 +833,9 @@ async def get_batch_status(batch_id: str):
     - Current file being processed
     - Completion counts
     """
-    status = await _batch_tracker.get_batch_status(batch_id, _job_store)
+    batch_tracker = await _get_batch_tracker()
+    job_store = await _get_job_store()
+    status = await _get_batch_status_response(batch_id, batch_tracker, job_store)
 
     if not status:
         raise HTTPException(404, f"Batch not found: {batch_id}")
@@ -959,7 +850,8 @@ async def cancel_batch_endpoint(batch_id: str):
 
     Files currently processing will complete, but no new files will start.
     """
-    batch = await _batch_tracker.get_batch(batch_id)
+    batch_tracker = await _get_batch_tracker()
+    batch = await batch_tracker.get_batch(batch_id)
 
     if not batch:
         raise HTTPException(404, f"Batch not found: {batch_id}")
@@ -967,7 +859,7 @@ async def cancel_batch_endpoint(batch_id: str):
     if batch["status"] in (BatchStatus.COMPLETED, BatchStatus.FAILED, BatchStatus.CANCELLED):
         raise HTTPException(400, f"Batch already finished with status: {batch['status']}")
 
-    await _batch_tracker.cancel_batch(batch_id)
+    await batch_tracker.cancel_batch(batch_id)
 
     return {"message": f"Batch {batch_id} cancellation requested"}
 
@@ -980,7 +872,9 @@ async def retry_failed_jobs(
     """
     Retry only failed jobs in a batch.
     """
-    batch = await _batch_tracker.get_batch(batch_id)
+    batch_tracker = await _get_batch_tracker()
+    job_store = await _get_job_store()
+    batch = await batch_tracker.get_batch(batch_id)
 
     if not batch:
         raise HTTPException(404, f"Batch not found: {batch_id}")
@@ -995,10 +889,11 @@ async def retry_failed_jobs(
     # Find failed jobs
     failed_jobs = []
     for info in batch["job_infos"]:
-        job = _job_store.get_job(info["job_id"])
+        job = await job_store.get_job_async(info["job_id"])
         if job and job.get("status") == "failed":
             # Reset job status
-            _job_store.update_job(info["job_id"],
+            await job_store.update_job_async(
+                info["job_id"],
                 status="pending",
                 progress=0,
                 error=None
@@ -1009,7 +904,7 @@ async def retry_failed_jobs(
         return {"message": "No failed jobs to retry", "retry_count": 0}
 
     # Update batch status
-    await _batch_tracker.update_batch_status(batch_id, BatchStatus.PROCESSING)
+    await batch_tracker.update_batch_status(batch_id, BatchStatus.PROCESSING)
     batch["cancelled"] = False
 
     # Start background retry
@@ -1087,14 +982,16 @@ async def _run_memory_safe_pipeline(
     """
     from src.ingest.memory_safe_pipeline import MemorySafePipeline
 
+    job_store = await _get_job_store()
+
     try:
-        _job_store.update_job(job_id, status="processing", stage="parsing", progress=10)
+        await job_store.update_job_async(job_id, status="processing", stage="parsing", progress=10)
 
         pipeline = MemorySafePipeline(config)
         result = await pipeline.process(file_path)
 
         # Note: Database writing not yet implemented for memory-safe mode
-        _job_store.update_job(job_id, stage="storing", progress=80)
+        await job_store.update_job_async(job_id, stage="storing", progress=80)
 
         # Build summary with explicit warning about non-persistence
         summary = {
@@ -1109,12 +1006,12 @@ async def _run_memory_safe_pipeline(
             ),
         }
 
-        _job_store.complete_job(job_id, summary)
+        await job_store.complete_job_async(job_id, summary)
         logger.info(f"Memory-safe job {job_id} completed (NOT persisted): {summary}")
 
     except Exception as e:
         logger.error(f"Memory-safe job {job_id} failed: {e}")
-        _job_store.fail_job(job_id, str(e))
+        await job_store.fail_job_async(job_id, str(e))
     finally:
         # Cleanup uploaded file
         try:
@@ -1177,7 +1074,8 @@ async def memory_safe_upload(
 
     # Create job
     doc_title = title or Path(filename).stem
-    _job_store.create_job(job_id, filename)
+    job_store = await _get_job_store()
+    await job_store.create_job_async(job_id, filename)
 
     # Queue background processing
     background_tasks.add_task(

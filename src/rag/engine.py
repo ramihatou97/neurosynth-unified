@@ -253,6 +253,9 @@ class RAGEngine:
                 logger.info("Graph-RAG context initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize Graph-RAG: {e}")
+        else:
+            if not self.config.use_graph_rag:
+                logger.info("Graph-RAG disabled via config - Ask will use chunks only")
 
     async def initialize(self):
         """Initialize async components (Graph-RAG)."""

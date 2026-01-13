@@ -37,6 +37,16 @@ class DocumentRepository(BaseRepository):
     def _to_entity(self, row: dict) -> Dict[str, Any]:
         """Convert database row to document dict."""
         # Note: Schema uses file_path, not source_path
+        # Handle metadata - can be dict (from JSONB) or None
+        metadata = row.get('metadata')
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except:
+                metadata = {}
+        elif metadata is None:
+            metadata = {}
+
         return {
             'id': row['id'],
             'source_path': row.get('file_path', ''),  # Map DB file_path to API source_path
@@ -47,7 +57,8 @@ class DocumentRepository(BaseRepository):
             'created_at': row.get('created_at'),
             'updated_at': row.get('updated_at'),
             'specialty': row.get('specialty'),
-            'authority_score': row.get('authority_score')
+            'authority_score': row.get('authority_score'),
+            'metadata': metadata
         }
     
     def _to_record(self, entity: Dict[str, Any]) -> Dict[str, Any]:
@@ -102,7 +113,9 @@ class DocumentRepository(BaseRepository):
     
     async def get_with_stats(self, id: UUID) -> Optional[Dict[str, Any]]:
         """Get document with chunk and image statistics."""
-        # Schema uses file_path, not source_path; embedding→clip_embedding, vlm_caption→caption
+        # Database has both old and new column names; use correct ones:
+        # - Images: 'embedding' column has 268 embeddings, 'vlm_caption' has 180 captions
+        # - Chunks: 'embedding' column has 1346 embeddings
         query = """
             SELECT
                 d.id,
@@ -112,11 +125,12 @@ class DocumentRepository(BaseRepository):
                 d.updated_at,
                 d.specialty,
                 d.authority_score,
+                d.metadata,
                 (SELECT COUNT(*) FROM chunks WHERE document_id = d.id) as total_chunks,
-                (SELECT COUNT(*) FROM chunks WHERE document_id = d.id AND embedding IS NOT NULL) as chunks_with_embedding,
+                (SELECT COUNT(*) FROM chunks WHERE document_id = d.id AND (text_embedding IS NOT NULL OR embedding IS NOT NULL)) as chunks_with_embedding,
                 (SELECT COUNT(*) FROM images WHERE document_id = d.id) as total_images,
-                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND clip_embedding IS NOT NULL) as images_with_embedding,
-                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND caption IS NOT NULL) as images_with_caption
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND (embedding IS NOT NULL OR clip_embedding IS NOT NULL)) as images_with_embedding,
+                (SELECT COUNT(*) FROM images WHERE document_id = d.id AND vlm_caption IS NOT NULL) as images_with_caption
             FROM documents d
             WHERE d.id = $1
         """

@@ -429,6 +429,7 @@ class SemanticChunk:
     umls_entities: List[UMLSEntity] = field(default_factory=list)
     # Human-readable summary (Stage 4.5)
     summary: Optional[str] = None
+    summary_embedding: Optional[np.ndarray] = None  # Embedding of summary for multi-index retrieval
     # Phase 2: Database fields
     db_id: Optional[UUID] = None
     contextual_content: Optional[str] = None

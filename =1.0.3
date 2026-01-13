@@ -1,0 +1,50 @@
+Collecting negspacy
+  Downloading negspacy-1.0.4.tar.gz (13 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: spacy<4.0.0,>=3.0.1 in ./venv/lib/python3.12/site-packages (from negspacy) (3.7.4)
+Requirement already satisfied: spacy-legacy<3.1.0,>=3.0.11 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (3.0.12)
+Requirement already satisfied: spacy-loggers<2.0.0,>=1.0.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (1.0.5)
+Requirement already satisfied: murmurhash<1.1.0,>=0.28.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (1.0.15)
+Requirement already satisfied: cymem<2.1.0,>=2.0.2 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (2.0.13)
+Requirement already satisfied: preshed<3.1.0,>=3.0.2 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (3.0.12)
+Requirement already satisfied: thinc<8.3.0,>=8.2.2 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (8.2.5)
+Requirement already satisfied: wasabi<1.2.0,>=0.9.1 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (1.1.3)
+Requirement already satisfied: srsly<3.0.0,>=2.4.3 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (2.5.2)
+Requirement already satisfied: catalogue<2.1.0,>=2.0.6 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (2.0.10)
+Requirement already satisfied: weasel<0.4.0,>=0.1.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (0.3.4)
+Requirement already satisfied: typer<0.10.0,>=0.3.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (0.9.4)
+Requirement already satisfied: smart-open<7.0.0,>=5.2.1 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (6.4.0)
+Requirement already satisfied: tqdm<5.0.0,>=4.38.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (4.67.1)
+Requirement already satisfied: requests<3.0.0,>=2.13.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (2.32.5)
+Requirement already satisfied: pydantic!=1.8,!=1.8.1,<3.0.0,>=1.7.4 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (2.12.5)
+Requirement already satisfied: jinja2 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (3.1.6)
+Requirement already satisfied: setuptools in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (80.9.0)
+Requirement already satisfied: packaging>=20.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (25.0)
+Requirement already satisfied: langcodes<4.0.0,>=3.2.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (3.5.1)
+Requirement already satisfied: numpy>=1.19.0 in ./venv/lib/python3.12/site-packages (from spacy<4.0.0,>=3.0.1->negspacy) (1.26.4)
+Requirement already satisfied: annotated-types>=0.6.0 in ./venv/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,<3.0.0,>=1.7.4->spacy<4.0.0,>=3.0.1->negspacy) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in ./venv/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,<3.0.0,>=1.7.4->spacy<4.0.0,>=3.0.1->negspacy) (2.41.5)
+Requirement already satisfied: typing-extensions>=4.14.1 in ./venv/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,<3.0.0,>=1.7.4->spacy<4.0.0,>=3.0.1->negspacy) (4.15.0)
+Requirement already satisfied: typing-inspection>=0.4.2 in ./venv/lib/python3.12/site-packages (from pydantic!=1.8,!=1.8.1,<3.0.0,>=1.7.4->spacy<4.0.0,>=3.0.1->negspacy) (0.4.2)
+Requirement already satisfied: charset_normalizer<4,>=2 in ./venv/lib/python3.12/site-packages (from requests<3.0.0,>=2.13.0->spacy<4.0.0,>=3.0.1->negspacy) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in ./venv/lib/python3.12/site-packages (from requests<3.0.0,>=2.13.0->spacy<4.0.0,>=3.0.1->negspacy) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in ./venv/lib/python3.12/site-packages (from requests<3.0.0,>=2.13.0->spacy<4.0.0,>=3.0.1->negspacy) (2.6.2)
+Requirement already satisfied: certifi>=2017.4.17 in ./venv/lib/python3.12/site-packages (from requests<3.0.0,>=2.13.0->spacy<4.0.0,>=3.0.1->negspacy) (2025.11.12)
+Requirement already satisfied: blis<0.8.0,>=0.7.8 in ./venv/lib/python3.12/site-packages (from thinc<8.3.0,>=8.2.2->spacy<4.0.0,>=3.0.1->negspacy) (0.7.11)
+Requirement already satisfied: confection<1.0.0,>=0.0.1 in ./venv/lib/python3.12/site-packages (from thinc<8.3.0,>=8.2.2->spacy<4.0.0,>=3.0.1->negspacy) (0.1.5)
+Requirement already satisfied: click<9.0.0,>=7.1.1 in ./venv/lib/python3.12/site-packages (from typer<0.10.0,>=0.3.0->spacy<4.0.0,>=3.0.1->negspacy) (8.3.1)
+Requirement already satisfied: cloudpathlib<0.17.0,>=0.7.0 in ./venv/lib/python3.12/site-packages (from weasel<0.4.0,>=0.1.0->spacy<4.0.0,>=3.0.1->negspacy) (0.16.0)
+Requirement already satisfied: MarkupSafe>=2.0 in ./venv/lib/python3.12/site-packages (from jinja2->spacy<4.0.0,>=3.0.1->negspacy) (2.1.5)
+Building wheels for collected packages: negspacy
+  Building wheel for negspacy (pyproject.toml): started
+  Building wheel for negspacy (pyproject.toml): finished with status 'done'
+  Created wheel for negspacy: filename=negspacy-1.0.4-py3-none-any.whl size=12631 sha256=42b0f78f46904060f32322cb1bc34c4ba0b89056484a26a231430227f6fafe5c
+  Stored in directory: /Users/ramihatoum/Library/Caches/pip/wheels/ca/89/69/61a6a722e19bb58f0ccdb62d879ec1dc4513310059d1fc0d1a
+Successfully built negspacy
+Installing collected packages: negspacy
+Successfully installed negspacy-1.0.4

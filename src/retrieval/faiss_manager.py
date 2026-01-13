@@ -552,9 +552,9 @@ class FAISSManager:
         text_ids = []
         
         rows = await db.fetch("""
-            SELECT id, embedding 
-            FROM chunks 
-            WHERE embedding IS NOT NULL
+            SELECT id, COALESCE(text_embedding, embedding) as embedding
+            FROM chunks
+            WHERE text_embedding IS NOT NULL OR embedding IS NOT NULL
             ORDER BY id
         """)
         
@@ -575,8 +575,9 @@ class FAISSManager:
         caption_embeddings = []
         caption_ids = []
         
+        # Use COALESCE to support both old 'embedding' and new 'clip_embedding' columns
         rows = await db.fetch("""
-            SELECT id, embedding, caption_embedding
+            SELECT id, COALESCE(clip_embedding, embedding) as embedding, caption_embedding
             FROM images
             WHERE NOT is_decorative
             ORDER BY id

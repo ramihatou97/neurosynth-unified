@@ -1,0 +1,44 @@
+--- a/src/ingest/pipeline.py
++++ b/src/ingest/pipeline.py
+@@ -718,6 +718,15 @@ class NeuroIngestPipeline:
+             if self._umls_extractor:
+                 await self._extract_umls_cuis(chunks, tracker)
+
++            # Stage 4.5: Generate embeddings BEFORE linking (enables Pass 3 semantic)
++            # CRITICAL FIX: TriPassLinker Pass 3 requires caption_embedding to exist
++            # Moving this BEFORE linking ensures semantic similarity works correctly
++            if self.config.enable_embeddings:
++                document.status = DocumentStatus.EMBEDDING
++                await self._generate_embeddings(chunks, images, tracker, document)
++
+             tracker.update(ProcessingStage.LINKING, 0.0, "Linking images to chunks")
+
+-            # Stage 4: Link images to chunks (TriPassLinker returns chunks, images, and links)
++            # Stage 5: Link images to chunks (TriPassLinker returns chunks, images, and links)
++            # Now that embeddings exist, Pass 3 (semantic similarity) will work correctly
+             chunks, images, links = self.linker.link(chunks, images)
+
+             tracker.update(ProcessingStage.LINKING, 1.0, f"Linked {len(images)} images to {len(links)} link relationships")
+
+-            # Stage 4.5: Build Knowledge Graph (GraphRAG)
++            # Stage 5.5: Build Knowledge Graph (GraphRAG)
+             if self._knowledge_graph and self._entity_extractor:
+                 await self._build_knowledge_graph(chunks, document, tracker)
+
+-            # Stage 4.6: Extract Relations (spaCy NLP)
++            # Stage 5.6: Extract Relations (spaCy NLP)
+             if self._relation_pipeline:
+                 await self._extract_relations(chunks, tracker)
+
+-            # Stage 5: Generate embeddings
++            # Stage 6: Fuse embeddings (uses link scores from TriPassLinker)
++            # Note: Embedding generation moved BEFORE linking (Stage 4.5)
++            # This step only does fusion with link weights now
+             if self.config.enable_embeddings:
+-                document.status = DocumentStatus.EMBEDDING
+-                await self._generate_embeddings(chunks, images, tracker, document)
+                 chunks = self.fuser.fuse_embeddings(chunks, images)
+
+-            # Stage 8.5: Generate brief summaries for image captions
++            # Stage 6.5: Generate brief summaries for image captions
+             await self._summarize_captions(images, tracker)

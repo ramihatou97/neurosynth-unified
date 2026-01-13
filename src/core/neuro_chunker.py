@@ -349,9 +349,11 @@ def get_title_entity(entities: List) -> Optional[object]:
 @dataclass
 class ChunkerConfig:
     """Configuration for the semantic chunker (synthesis-optimized)."""
+    # Token limits
     target_tokens: int = 600      # Soft limit - increased for richer context
     max_tokens: int = 1000        # Hard limit - increased for complete thoughts
-    min_tokens: int = 150         # Minimum chunk size - avoid fragments
+    min_tokens: int = 150         # Minimum chunk size (words) - avoid fragments
+    min_chars: int = 50           # Minimum chunk size (chars) - reject tiny artifacts
     overlap_sentences: int = 2    # Sentences to overlap - better continuity
 
     # Type-specific limits (used when chunk type is detected early)
@@ -360,6 +362,30 @@ class ChunkerConfig:
     pathology_target_tokens: int = 650    # Pathology needs clinical context
     clinical_target_tokens: int = 600     # Clinical matches default
 
+    # Adaptive overlap by chunk type (sentences)
+    # Procedures need MORE overlap for step continuity
+    # Anatomy can use less overlap (more self-contained)
+    procedure_overlap_sentences: int = 3   # Extra overlap for surgical steps
+    anatomy_overlap_sentences: int = 1     # Minimal overlap for definitions
+    pathology_overlap_sentences: int = 2   # Standard overlap for clinical
+    clinical_overlap_sentences: int = 2    # Standard overlap
+
+    def get_overlap_for_type(self, chunk_type: str) -> int:
+        """Get adaptive overlap sentences based on chunk type.
+
+        Args:
+            chunk_type: One of 'procedure', 'anatomy', 'pathology', 'clinical', 'general'
+
+        Returns:
+            Number of overlap sentences for this chunk type
+        """
+        overlap_map = {
+            "procedure": self.procedure_overlap_sentences,
+            "anatomy": self.anatomy_overlap_sentences,
+            "pathology": self.pathology_overlap_sentences,
+            "clinical": self.clinical_overlap_sentences,
+        }
+        return overlap_map.get(chunk_type, self.overlap_sentences)
 
 class NeuroSemanticChunker:
     """
@@ -521,7 +547,8 @@ class NeuroSemanticChunker:
                         chunk = self._finalize_chunk(
                             current_buffer, section_title, page_num, doc_id
                         )
-                        chunks.append(chunk)
+                        if chunk:  # Only add if not None (passed min size)
+                            chunks.append(chunk)
                     
                     current_buffer = [sentence]
                     current_word_count = sent_word_count
@@ -541,7 +568,8 @@ class NeuroSemanticChunker:
                         chunk = self._finalize_chunk(
                             current_buffer, section_title, page_num, doc_id
                         )
-                        chunks.append(chunk)
+                        if chunk:  # Only add if not None (passed min size)
+                            chunks.append(chunk)
                     
                     # Start new buffer with overlap
                     overlap = current_buffer[-self.config.overlap_sentences:] if current_buffer else []
@@ -555,38 +583,53 @@ class NeuroSemanticChunker:
         
         # Flush remaining buffer
         if current_buffer:
-            # Check minimum size
+            # Check minimum size (word-based)
             if current_word_count >= self.config.min_tokens or not chunks:
                 chunk = self._finalize_chunk(
                     current_buffer, section_title, page_num, doc_id
                 )
-                chunks.append(chunk)
+                if chunk:  # Only add if not None (passed min size)
+                    chunks.append(chunk)
+                elif chunks:
+                    # If chunk was rejected for being too small, merge with previous
+                    prev_chunk = chunks[-1]
+                    prev_chunk.content += "\n\n" + " ".join(current_buffer)
             elif chunks:
                 # Merge with previous chunk if too small
                 prev_chunk = chunks[-1]
                 prev_chunk.content += "\n\n" + " ".join(current_buffer)
-        
+
         return chunks
     
     def _split_sentences(self, text: str) -> List[str]:
         """
         Split text into sentences, protecting medical abbreviations.
+        Filters out garbage fragments (page numbers, single words, etc.)
         """
         # Normalize whitespace
         text = re.sub(r'\s+', ' ', text.strip())
-        
+
         # Split on sentence boundaries
         parts = self.sentence_split_pattern.split(text)
-        
+
         sentences = []
         for part in parts:
             part = part.strip()
             if part:
+                # Filter out garbage fragments
+                # Skip if: just numbers, too short, or pattern like "23." or "■."
+                if len(part) < 5:  # Too short to be meaningful
+                    continue
+                if re.match(r'^[\d\s■\.\-]+$', part):  # Just numbers/page markers
+                    continue
+                if re.match(r'^[a-z]{1,3}\.$', part.lower()):  # Single word + period
+                    continue
+
                 # Ensure sentence ends with period
                 if not part.endswith(('.', '!', '?')):
                     part += '.'
                 sentences.append(part)
-        
+
         return sentences
     
     def _check_dependency(self, sentence: str) -> bool:
@@ -724,11 +767,17 @@ class NeuroSemanticChunker:
         section_title: str,
         page_num: int,
         doc_id: str
-    ) -> SemanticChunk:
+    ) -> Optional[SemanticChunk]:
         """
         Create a SemanticChunk with full metadata extraction.
+        Returns None if chunk fails minimum size validation.
         """
         content = " ".join(buffer)
+
+        # Reject chunks that are too short (character-based)
+        if len(content.strip()) < self.config.min_chars:
+            logger.debug(f"Rejecting chunk: too short ({len(content)} chars < {self.config.min_chars})")
+            return None
         
         # Extract medical entities
         entities = self.extractor.extract(content)

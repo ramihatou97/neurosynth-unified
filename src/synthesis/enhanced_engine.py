@@ -207,6 +207,8 @@ class EnhancedSynthesisEngine:
         include_figures: bool = True,
         # NEW PARAMETER
         include_web_research: bool = False,
+        # Gap filling strategy (passed to base engine)
+        gap_fill_strategy: Optional[str] = None,
     ) -> EnhancedSynthesisResult:
         """
         Generate textbook-quality synthesis with optional web research.
@@ -242,6 +244,7 @@ class EnhancedSynthesisEngine:
                 search_results=search_results,
                 include_verification=include_verification,
                 include_figures=include_figures,
+                gap_fill_strategy=gap_fill_strategy,
             )
             return self._convert_to_enhanced(base_result)
 

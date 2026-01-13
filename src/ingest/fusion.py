@@ -353,6 +353,7 @@ class TriPassLinker:
         semantic_weight: float = 0.55,
         cui_weight: float = 0.45,
         page_buffer: int = 1,
+        page_confidence_mode: str = "strict",  # "strict" | "relaxed" | "semantic_only"
     ):
         """
         Initialize the tri-pass linker.
@@ -363,12 +364,15 @@ class TriPassLinker:
             semantic_weight: Weight for semantic similarity in fusion
             cui_weight: Weight for CUI overlap in fusion
             page_buffer: Page proximity range (+/- pages)
+            page_confidence_mode: "strict" (default), "relaxed" (5-page buffer),
+                                  or "semantic_only" (skip proximity filter)
         """
         self.semantic_threshold = semantic_threshold
         self.cui_threshold = cui_threshold
         self.semantic_weight = semantic_weight
         self.cui_weight = cui_weight
         self.page_buffer = page_buffer
+        self.page_confidence_mode = page_confidence_mode
 
         # Validation
         if abs((semantic_weight + cui_weight) - 1.0) > 0.001:
@@ -399,13 +403,18 @@ class TriPassLinker:
         # Build figure reference map for deterministic matching
         figure_map = self._build_figure_map(images)
 
+        # Compute max chunk page for reliability detection
+        max_chunk_page = max(
+            (c.page_end or c.page_start or 0 for c in chunks), default=0
+        )
+
         for image in images:
             # Skip decorative images or those without caption embedding
             if image.is_decorative:
                 continue
 
             # Get candidate chunks within page buffer
-            candidates = self._get_candidate_chunks(chunks, image)
+            candidates = self._get_candidate_chunks(chunks, image, max_chunk_page)
 
             if not candidates:
                 continue
@@ -481,13 +490,34 @@ class TriPassLinker:
     def _get_candidate_chunks(
         self,
         chunks: List[SemanticChunk],
-        image: ExtractedImage
+        image: ExtractedImage,
+        max_chunk_page: int = None
     ) -> List[SemanticChunk]:
-        """Get chunks within page buffer of image."""
+        """
+        Get chunks within page buffer of image.
+
+        If page_confidence_mode is "semantic_only" or page numbers appear unreliable
+        (e.g., image.page_number > max_chunk_page), skip proximity filter entirely.
+        """
+        # Detect unreliable page data: image page exceeds chunk page range
+        if max_chunk_page and image.page_number and image.page_number > max_chunk_page + 3:
+            logger.debug(
+                f"Image page {image.page_number} exceeds chunk range (max={max_chunk_page}), "
+                f"using semantic-only linking"
+            )
+            return chunks  # All chunks are candidates
+
+        if self.page_confidence_mode == "semantic_only":
+            return chunks
+
+        buffer = self.page_buffer
+        if self.page_confidence_mode == "relaxed":
+            buffer = max(5, self.page_buffer * 3)  # 5 pages minimum
+
         return [
             c for c in chunks
-            if abs(c.page_start - image.page_number) <= self.page_buffer
-            or abs(c.page_end - image.page_number) <= self.page_buffer
+            if abs(c.page_start - image.page_number) <= buffer
+            or abs(c.page_end - image.page_number) <= buffer
         ]
 
     def _calculate_link(

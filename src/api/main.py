@@ -14,11 +14,16 @@ Or:
 from dotenv import load_dotenv
 load_dotenv()  # Load .env file before anything else
 
-# Validate environment at startup (before anything else)
+# Configure structured logging FIRST (before any imports that might log)
+# This ensures all loggers use JSON format in production
+from src.core.logging_config import configure_logging, RequestLoggingMiddleware
+configure_logging()  # Auto-detects JSON vs console based on ENVIRONMENT
+
+# Validate environment at startup
 from src.api.dependencies import validate_environment
 validate_environment(exit_on_error=True)
 
-import logging
+import structlog
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -55,12 +60,8 @@ from src.chat.routes import router as chat_router
 from src.library.routes import router as library_router
 from src.library.procedure_routes import router as procedure_router, init_procedure_routes
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+# Get structured logger
+logger = structlog.get_logger(__name__)
 
 
 # =============================================================================
@@ -71,20 +72,25 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """
     Manage application lifecycle.
-    
+
     Initializes services on startup and cleans up on shutdown.
     """
     # Startup
-    logger.info("Starting NeuroSynth API...")
-    
+    logger.info("Application starting", phase="startup")
+
     settings = get_settings()
     container = ServiceContainer.get_instance()
-    
+
     try:
         await container.initialize(settings)
-        logger.info("✓ Services initialized")
+        logger.info("Services initialized", component="core", status="success")
     except Exception as e:
-        logger.error(f"Failed to initialize services: {e}")
+        logger.error(
+            "Failed to initialize services",
+            component="core",
+            error=str(e),
+            status="failed"
+        )
         # Fail fast - don't allow degraded startup that will cause 500 errors
         raise RuntimeError(f"Cannot start API without database: {e}") from e
 
@@ -92,16 +98,26 @@ async def lifespan(app: FastAPI):
     try:
         from src.chat.routes import get_stores
         await get_stores()
-        logger.info("✓ Chat stores initialized")
+        logger.info("Chat stores initialized", component="chat", status="success")
     except Exception as e:
-        logger.warning(f"Chat store initialization failed (using in-memory fallback): {e}")
+        logger.warning(
+            "Chat store initialization failed",
+            component="chat",
+            fallback="in-memory",
+            error=str(e)
+        )
 
     # Load authority registry from database (if table exists)
     try:
         await load_registry_from_db(container.database)
-        logger.info("✓ Authority registry loaded")
+        logger.info("Authority registry loaded", component="registry", status="success")
     except Exception as e:
-        logger.warning(f"Authority registry not loaded: {e}. Using defaults.")
+        logger.warning(
+            "Authority registry not loaded",
+            component="registry",
+            fallback="defaults",
+            error=str(e)
+        )
 
     # Initialize NPRSS learning dependencies
     try:
@@ -111,33 +127,47 @@ async def lifespan(app: FastAPI):
             rag_engine=container.rag_engine if hasattr(container, 'rag_engine') else None,
             llm_client=None  # Will use default Anthropic client
         )
-        logger.info("✓ NPRSS learning dependencies initialized")
+        logger.info("NPRSS learning initialized", component="nprss", status="success")
     except Exception as e:
-        logger.warning(f"NPRSS initialization failed (learning features unavailable): {e}")
+        logger.warning(
+            "NPRSS initialization failed",
+            component="nprss",
+            error=str(e)
+        )
 
     # Initialize NeuroSynth 2.0 surgical reasoning dependencies
     try:
         from src.neurosynth2.dependencies import initialize_ns2_dependencies
         initialize_ns2_dependencies(db_pool=container.database)
-        logger.info("✓ NeuroSynth 2.0 initialized")
+        logger.info("NeuroSynth 2.0 initialized", component="neurosynth2", status="success")
     except ImportError:
         pass  # Module not installed
     except Exception as e:
-        logger.warning(f"NeuroSynth 2.0 initialization failed (reasoning features unavailable): {e}")
+        logger.warning(
+            "NeuroSynth 2.0 initialization failed",
+            component="neurosynth2",
+            error=str(e)
+        )
 
     # Initialize procedure-centric library routes
     try:
         init_procedure_routes(container.database)
-        logger.info("✓ Procedure library routes initialized")
+        logger.info("Procedure routes initialized", component="procedures", status="success")
     except Exception as e:
-        logger.warning(f"Procedure routes initialization failed: {e}")
+        logger.warning(
+            "Procedure routes initialization failed",
+            component="procedures",
+            error=str(e)
+        )
+
+    logger.info("Application ready", phase="startup", status="complete")
 
     yield
-    
+
     # Shutdown
-    logger.info("Shutting down NeuroSynth API...")
+    logger.info("Application shutting down", phase="shutdown")
     await container.shutdown()
-    logger.info("✓ Shutdown complete")
+    logger.info("Shutdown complete", phase="shutdown", status="complete")
 
 
 # =============================================================================
@@ -187,7 +217,10 @@ Currently open access. Production deployments should add authentication.
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization"],
     )
-    
+
+    # Request logging middleware (adds correlation IDs, logs requests)
+    app.add_middleware(RequestLoggingMiddleware)
+
     # Register routes
     # All main API routes use /api/v1 prefix for frontend compatibility
     app.include_router(health_router, prefix="/api/v1")
@@ -263,8 +296,14 @@ Currently open access. Production deployments should add authentication.
         exc: Exception
     ):
         """Handle unexpected errors."""
-        logger.exception(f"Unhandled error: {exc}")
-        
+        logger.exception(
+            "Unhandled error",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            path=request.url.path,
+            method=request.method,
+        )
+
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={

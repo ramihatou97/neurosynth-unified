@@ -438,13 +438,18 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
     # =========================================================================
     
     async def get_statistics(self, document_id: UUID = None) -> Dict[str, Any]:
-        """Get image statistics."""
+        """Get image statistics.
+
+        Note: Database has multiple embedding/caption columns due to migrations:
+        - Visual embeddings: check 'embedding' (268 rows) OR 'clip_embedding' (52 rows)
+        - Captions: check 'vlm_caption' (180 rows), 'caption' column is empty
+        """
         if document_id:
             query = """
                 SELECT
                     COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE clip_embedding IS NOT NULL) as with_visual_embedding,
-                    COUNT(*) FILTER (WHERE caption IS NOT NULL) as with_caption,
+                    COUNT(*) FILTER (WHERE embedding IS NOT NULL OR clip_embedding IS NOT NULL) as with_visual_embedding,
+                    COUNT(*) FILTER (WHERE vlm_caption IS NOT NULL) as with_caption,
                     COUNT(*) FILTER (WHERE is_decorative) as decorative,
                     COUNT(DISTINCT image_type) as unique_types
                 FROM images
@@ -455,8 +460,8 @@ class ImageRepository(BaseRepository, VectorSearchMixin):
             query = """
                 SELECT
                     COUNT(*) as total,
-                    COUNT(*) FILTER (WHERE clip_embedding IS NOT NULL) as with_visual_embedding,
-                    COUNT(*) FILTER (WHERE caption IS NOT NULL) as with_caption,
+                    COUNT(*) FILTER (WHERE embedding IS NOT NULL OR clip_embedding IS NOT NULL) as with_visual_embedding,
+                    COUNT(*) FILTER (WHERE vlm_caption IS NOT NULL) as with_caption,
                     COUNT(*) FILTER (WHERE is_decorative) as decorative,
                     COUNT(DISTINCT image_type) as unique_types
                 FROM images

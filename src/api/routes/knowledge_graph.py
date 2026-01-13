@@ -96,6 +96,9 @@ class EdgeData(BaseModel):
     confidence: float
     context: Optional[str] = None
     hop: int
+    is_negated: bool = False
+    negation_cue: Optional[str] = None
+    extraction_method: Optional[str] = None
 
 
 class TraversalResponse(BaseModel):
@@ -182,15 +185,15 @@ async def get_entity(
         normalized = graph_ctx.normalize_entity(name)
 
     async with db_pool.acquire() as conn:
-        # Get entity
+        # Get entity (aliases column doesn't exist in current schema)
         entity_row = await conn.fetchrow("""
-            SELECT id, name, aliases FROM entities WHERE name = $1
+            SELECT id, name FROM entities WHERE name = $1
         """, normalized)
 
         if not entity_row:
             # Try case-insensitive search
             entity_row = await conn.fetchrow("""
-                SELECT id, name, aliases FROM entities WHERE LOWER(name) = LOWER($1)
+                SELECT id, name FROM entities WHERE LOWER(name) = LOWER($1)
             """, name)
 
         if not entity_row:
@@ -212,7 +215,7 @@ async def get_entity(
         return EntityResponse(
             name=entity_row["name"],
             normalized=normalized,
-            aliases=entity_row["aliases"] or [],
+            aliases=[],  # aliases column not in current schema
             relations=[
                 EntityRelation(
                     target=r["target"],
@@ -267,7 +270,10 @@ async def traverse_graph(
                     e2.name as target_name,
                     er.relation_type,
                     er.confidence,
-                    er.context_snippet
+                    er.context_snippet,
+                    COALESCE(er.is_negated, FALSE) as is_negated,
+                    er.negation_cue,
+                    er.extraction_method
                 FROM entity_relations er
                 JOIN entities e1 ON er.source_entity_id = e1.id
                 JOIN entities e2 ON er.target_entity_id = e2.id
@@ -298,6 +304,9 @@ async def traverse_graph(
                     confidence=row['confidence'],
                     context=row['context_snippet'],
                     hop=hop + 1,
+                    is_negated=row['is_negated'],
+                    negation_cue=row['negation_cue'],
+                    extraction_method=row['extraction_method'],
                 ))
 
                 if row['target_name'] not in entities:
@@ -396,6 +405,9 @@ async def get_visualization_data(
                 "label": edge.relation.replace("_", " "),
                 "confidence": edge.confidence,
                 "relation_type": edge.relation,
+                "is_negated": edge.is_negated,
+                "negation_cue": edge.negation_cue,
+                "extraction_method": edge.extraction_method,
             }
         ))
 
@@ -454,16 +466,16 @@ async def search_entities(
         _raise_schema_error()
 
     async with db_pool.acquire() as conn:
+        # aliases column not in current schema
         rows = await conn.fetch("""
             SELECT
                 e.id,
                 e.name,
-                e.aliases,
                 COUNT(er.id) as relation_count
             FROM entities e
             LEFT JOIN entity_relations er ON e.id = er.source_entity_id
             WHERE e.name ILIKE $1 || '%'
-            GROUP BY e.id, e.name, e.aliases
+            GROUP BY e.id, e.name
             ORDER BY relation_count DESC, e.name
             LIMIT $2
         """, q, limit)
@@ -473,7 +485,7 @@ async def search_entities(
                 {
                     "id": str(row["id"]),
                     "name": row["name"],
-                    "aliases": row["aliases"] or [],
+                    "aliases": [],
                     "relation_count": row["relation_count"],
                 }
                 for row in rows

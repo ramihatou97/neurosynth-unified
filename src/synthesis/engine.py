@@ -28,6 +28,7 @@ from src.synthesis.conflicts import ConflictHandler, ConflictReport
 try:
     from src.synthesis.gap_models import (
         GapReport,
+        GapFillResult,
         GapFillStrategy,
         TemplateType as GapTemplateType,
     )
@@ -37,6 +38,7 @@ try:
 except ImportError:
     GAP_DETECTION_AVAILABLE = False
     GapReport = None
+    GapFillResult = None
     GapFillStrategy = None
 
 # Import enhanced adapters for synthesis alignment fixes
@@ -375,6 +377,9 @@ class SynthesisResult:
     # Gap detection results (14-stage neurosurgical analysis)
     gap_report: Optional["GapReport"] = None
 
+    # Gap filling results
+    gap_fill_results: List["GapFillResult"] = field(default_factory=list)
+
     @property
     def conflict_count(self) -> int:
         """Number of detected conflicts."""
@@ -389,6 +394,11 @@ class SynthesisResult:
     def requires_expert_review(self) -> bool:
         """True if any safety-critical gaps require expert review."""
         return self.gap_report.requires_expert_review if self.gap_report else False
+
+    @property
+    def gaps_filled_count(self) -> int:
+        """Number of successfully filled gaps."""
+        return sum(1 for r in self.gap_fill_results if r.fill_successful)
 
     def __post_init__(self):
         self.total_words = sum(s.word_count for s in self.sections)
@@ -418,6 +428,18 @@ class SynthesisResult:
             "critical_gap_count": self.critical_gap_count,
             "requires_expert_review": self.requires_expert_review,
             "gap_report": self.gap_report.to_dict() if self.gap_report else None,
+            # Gap filling results
+            "gaps_filled_count": self.gaps_filled_count,
+            "gap_fill_results": [
+                {
+                    "gap_id": r.gap_id,
+                    "topic": r.topic,
+                    "fill_successful": r.fill_successful,
+                    "fill_source": r.fill_source,
+                    "fill_duration_ms": r.fill_duration_ms,
+                }
+                for r in self.gap_fill_results
+            ],
         }
 
     def to_markdown(self) -> str:
@@ -1024,6 +1046,77 @@ class SynthesisEngine:
                     for issue in validation_report.get("issues", [])[:3]:
                         logger.warning(f"  - {issue.get('message', '')}")
 
+        # Stage 5.6: Gap Filling (if enabled and gaps detected)
+        gap_fill_results = []
+        if (
+            self.gap_filler
+            and gap_report
+            and gap_fill_strategy
+            and gap_fill_strategy != "none"
+            and GAP_DETECTION_AVAILABLE
+        ):
+            logger.info(f"Running gap filling (strategy={gap_fill_strategy})")
+            try:
+                # Map string strategy to enum
+                strategy_map = {
+                    "high_priority": GapFillStrategy.HIGH_PRIORITY_ONLY,
+                    "high": GapFillStrategy.HIGH_PRIORITY_ONLY,
+                    "all": GapFillStrategy.ALL_WITH_FALLBACK,
+                    "fallback": GapFillStrategy.ALL_WITH_FALLBACK,
+                    "external": GapFillStrategy.ALWAYS_EXTERNAL,
+                    "always": GapFillStrategy.ALWAYS_EXTERNAL,
+                }
+                fill_strategy = strategy_map.get(
+                    gap_fill_strategy.lower(),
+                    GapFillStrategy.HIGH_PRIORITY_ONLY
+                )
+
+                # Get gaps to fill based on strategy
+                gaps_to_fill = gap_report.high_priority_gaps if fill_strategy == GapFillStrategy.HIGH_PRIORITY_ONLY else gap_report.gaps
+
+                if gaps_to_fill:
+                    # Fill gaps
+                    gap_fill_results = await self.gap_filler.fill_gaps(
+                        gaps=gaps_to_fill,
+                        strategy=fill_strategy,
+                    )
+
+                    # Count successful fills
+                    successful_fills = [r for r in gap_fill_results if r.fill_successful]
+                    if successful_fills:
+                        logger.info(
+                            f"Gap filling complete: {len(successful_fills)}/{len(gaps_to_fill)} gaps filled"
+                        )
+
+                        # Integrate filled content into sections
+                        # Combine all section content for enhancement
+                        original_content = "\n\n".join(s.content for s in sections)
+                        enhanced_content = await self.gap_filler.fill_gaps_with_synthesis(
+                            gaps=gaps_to_fill,
+                            strategy=fill_strategy,
+                            original_content=original_content,
+                        )
+
+                        # If content was enhanced, update the last section with addendum
+                        if enhanced_content != original_content and sections:
+                            # Find where the addendum starts (if appended)
+                            if "---\n\n**Additional Information**" in enhanced_content:
+                                addendum_start = enhanced_content.index("---\n\n**Additional Information**")
+                                addendum = enhanced_content[addendum_start:]
+                                # Add as a new section
+                                sections.append(SynthesisSection(
+                                    title="Gap-Filled Content",
+                                    content=addendum,
+                                    level=2,
+                                    sources=["gap_fill"],
+                                ))
+                                logger.info("Added gap-filled content as new section")
+                    else:
+                        logger.info("No gaps could be successfully filled")
+
+            except Exception as e:
+                logger.error(f"Gap filling failed: {e}")
+
         # Build result
         result = SynthesisResult(
             topic=topic,
@@ -1037,6 +1130,7 @@ class SynthesisEngine:
             synthesis_time_ms=int((time() - start_time) * 1000),
             conflict_report=conflict_report,
             gap_report=gap_report,
+            gap_fill_results=gap_fill_results,
         )
 
         # Stage 6: Optional verification
@@ -1058,6 +1152,79 @@ class SynthesisEngine:
         )
 
         return result
+
+    def compute_synthesis_score(self, result: SynthesisResult) -> Dict[str, float]:
+        """
+        Compute comprehensive quality score for synthesis output.
+
+        Scoring dimensions:
+        1. Content coverage (40%): Section completeness, word count
+        2. Source authority (25%): Authority tier weighting of sources
+        3. Visual integration (15%): Figure resolution rate, image relevance
+        4. Coherence (20%): Conflict count, gap coverage
+
+        Args:
+            result: SynthesisResult from synthesize()
+
+        Returns:
+            Dict with dimension scores and overall score (0.0-1.0)
+        """
+        scores = {}
+
+        # Dimension 1: Content Coverage (0.0-0.40)
+        section_count = len(result.sections)
+        expected_sections = len(TEMPLATE_SECTIONS.get(result.template_type, []))
+        section_coverage = min(1.0, section_count / max(expected_sections, 1))
+
+        word_count = result.total_words
+        min_words = TEMPLATE_REQUIREMENTS.get(result.template_type, {}).get("min_words", 2000)
+        max_words = TEMPLATE_REQUIREMENTS.get(result.template_type, {}).get("max_words", 8000)
+        word_coverage = min(1.0, word_count / min_words) if word_count < min_words else 1.0
+        word_penalty = 0.1 if word_count > max_words * 1.2 else 0.0  # Penalty for excessive length
+
+        scores["content_coverage"] = (section_coverage * 0.5 + word_coverage * 0.5 - word_penalty) * 0.40
+
+        # Dimension 2: Source Authority (0.0-0.25)
+        authority_scores = []
+        for ref in result.references:
+            # Parse authority tier from reference (default to tier 3)
+            auth_str = getattr(ref, 'authority', '') if hasattr(ref, 'authority') else ''
+            if 'rhoton' in auth_str.lower() or 'lawton' in auth_str.lower():
+                authority_scores.append(1.0)
+            elif 'textbook' in auth_str.lower() or 'atlas' in auth_str.lower():
+                authority_scores.append(0.9)
+            else:
+                authority_scores.append(0.7)
+
+        avg_authority = sum(authority_scores) / max(len(authority_scores), 1)
+        scores["source_authority"] = avg_authority * 0.25
+
+        # Dimension 3: Visual Integration (0.0-0.15)
+        figure_requests = len(result.figure_requests)
+        resolved_figures = len(result.resolved_figures)
+        resolution_rate = resolved_figures / max(figure_requests, 1) if figure_requests > 0 else 0.5
+
+        has_any_figures = result.total_figures > 0
+        figure_bonus = 0.05 if has_any_figures else 0.0
+
+        scores["visual_integration"] = (resolution_rate * 0.10 + figure_bonus)
+
+        # Dimension 4: Coherence (0.0-0.20)
+        conflict_count = result.conflict_count
+        conflict_penalty = min(0.15, conflict_count * 0.03)  # -3% per conflict, max -15%
+
+        gap_penalty = 0.0
+        if result.gap_report:
+            critical_gaps = result.gap_report.critical_gaps
+            gap_penalty = min(0.10, critical_gaps * 0.05)  # -5% per critical gap, max -10%
+
+        scores["coherence"] = max(0.0, 0.20 - conflict_penalty - gap_penalty)
+
+        # Overall score
+        scores["overall"] = sum(scores.values())
+        scores["grade"] = "A" if scores["overall"] >= 0.85 else "B" if scores["overall"] >= 0.70 else "C" if scores["overall"] >= 0.55 else "D"
+
+        return scores
 
     def _map_template_type(self, template_type: TemplateType) -> "GapTemplateType":
         """Map synthesis TemplateType to gap detection TemplateType."""

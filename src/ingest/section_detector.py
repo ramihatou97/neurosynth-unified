@@ -152,8 +152,79 @@ class SectionDetector:
                 page_end=len(doc) - 1,
                 content=self._extract_full_text(doc)
             ))
-        
+
+        # Post-process: merge sections that are too short to be meaningful
+        sections = self._merge_small_sections(sections)
+
         return sections
+
+    def _merge_small_sections(
+        self,
+        sections: List[Section],
+        min_words: int = 30
+    ) -> List[Section]:
+        """
+        Merge sections that are too short to be meaningful.
+
+        Prevents table rows and fragment headers from becoming standalone sections.
+        Short sections are merged with the following section.
+
+        Args:
+            sections: List of detected sections
+            min_words: Minimum word count for a section to stand alone
+
+        Returns:
+            Merged section list
+        """
+        if len(sections) <= 1:
+            return sections
+
+        merged = []
+        pending_merge: Optional[Section] = None
+
+        for section in sections:
+            word_count = len(section.content.split())
+            title_word_count = len(section.title.split())
+
+            if pending_merge:
+                # Merge pending short section with current section
+                merged_title = f"{pending_merge.title} / {section.title}"
+                merged_content = pending_merge.content
+                if merged_content and section.content:
+                    merged_content += "\n\n" + section.content
+                elif section.content:
+                    merged_content = section.content
+
+                section = Section(
+                    title=merged_title[:100] if len(merged_title) > 100 else merged_title,
+                    level=min(pending_merge.level, section.level),
+                    page_start=pending_merge.page_start,
+                    page_end=section.page_end,
+                    content=merged_content
+                )
+                pending_merge = None
+                word_count = len(section.content.split())
+
+            # Check if this section is too short
+            # Consider both content and title (some table headers have title but no content)
+            if word_count < min_words and title_word_count < 5:
+                # Mark for merging with next section
+                pending_merge = section
+            else:
+                merged.append(section)
+
+        # Handle trailing pending section
+        if pending_merge:
+            if merged:
+                # Append to last section
+                last = merged[-1]
+                last.content += f"\n\n{pending_merge.title}\n{pending_merge.content}"
+                last.page_end = pending_merge.page_end
+            else:
+                # No sections to merge with, keep it
+                merged.append(pending_merge)
+
+        return merged
     
     def _analyze_fonts(self, doc: "fitz.Document"):
         """

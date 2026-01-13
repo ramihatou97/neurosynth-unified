@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # =============================================================================
@@ -219,9 +219,15 @@ class CitationItem(BaseModel):
 class ImageItem(BaseModel):
     """Linked image."""
     image_id: str
-    file_path: str
-    caption: str
+    file_path: str  # Coerced from PosixPath via validator
+    caption: Optional[str] = None  # Can be None if VLM captioning not run
     image_type: Optional[str] = None
+
+    @field_validator('file_path', mode='before')
+    @classmethod
+    def coerce_path_to_str(cls, v):
+        """Convert PosixPath to string."""
+        return str(v) if v is not None else ""
 
 
 class RAGResponse(BaseModel):

@@ -63,6 +63,7 @@ class UnifiedPipelineResult:
             self.error = getattr(phase1_result, 'error', None)
             self.processing_time_seconds = getattr(phase1_result, 'processing_time_seconds', 0)
             self.total_pages = getattr(phase1_result, 'total_pages', 0)
+            self.extraction_metrics = getattr(phase1_result, 'extraction_metrics', {})
         else:
             self.chunks = []
             self.images = []
@@ -70,6 +71,7 @@ class UnifiedPipelineResult:
             self.error = None
             self.processing_time_seconds = 0
             self.total_pages = 0
+            self.extraction_metrics = {}
     
     @property
     def chunk_count(self) -> int:

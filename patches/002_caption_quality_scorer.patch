@@ -1,0 +1,116 @@
+diff --git a/src/retrieval/vlm_captioner.py b/src/retrieval/vlm_captioner.py
+--- a/src/retrieval/vlm_captioner.py
++++ b/src/retrieval/vlm_captioner.py
+@@ -117,6 +117,101 @@ class CaptionResult:
+     @property
+     def success(self) -> bool:
+         return self.error is None and len(self.caption) > 0
++
++    @property
++    def quality_score(self) -> float:
++        """Compute quality score for this caption (0.0-1.0)."""
++        scorer = CaptionQualityScorer()
++        return scorer.score(self.caption, self.image_type)
++
++
++class CaptionQualityScorer:
++    """
++    Scores VLM caption quality for synthesis gating.
++
++    Quality dimensions:
++    1. Length adequacy (not too short, not too long)
++    2. Medical terminology density
++    3. Structural completeness (anatomical + clinical terms)
++    4. Specificity (avoids generic descriptions)
++
++    Used to:
++    - Filter low-quality captions before embedding
++    - Weight caption relevance in search
++    - Flag images needing re-captioning
++    """
++
++    # Medical terminology indicators
++    ANATOMICAL_TERMS = {
++        "artery", "vein", "nerve", "nucleus", "gyrus", "sulcus", "fissure",
++        "foramen", "canal", "sinus", "meninges", "dura", "arachnoid", "pia",
++        "ventricle", "cistern", "fossa", "bone", "muscle", "ligament",
++        "cortex", "white matter", "gray matter", "tract", "pathway",
++        "anterior", "posterior", "superior", "inferior", "medial", "lateral",
++        "proximal", "distal", "rostral", "caudal", "dorsal", "ventral"
++    }
++
++    CLINICAL_TERMS = {
++        "tumor", "lesion", "hemorrhage", "infarct", "edema", "mass",
++        "compression", "displacement", "invasion", "resection", "exposure",
++        "dissection", "retraction", "coagulation", "clip", "anastomosis",
++        "craniotomy", "approach", "corridor", "trajectory", "margin"
++    }
++
++    GENERIC_PHRASES = {
++        "this image shows", "the image depicts", "we can see",
++        "it appears to be", "possibly showing", "seems to be",
++        "medical image", "clinical image", "surgical image"
++    }
++
++    def __init__(
++        self,
++        min_length: int = 50,
++        max_length: int = 500,
++        min_medical_density: float = 0.05,
++        penalty_generic: float = 0.2
++    ):
++        self.min_length = min_length
++        self.max_length = max_length
++        self.min_medical_density = min_medical_density
++        self.penalty_generic = penalty_generic
++
++    def score(self, caption: str, image_type: ImageType = None) -> float:
++        """
++        Score caption quality (0.0-1.0).
++
++        Args:
++            caption: The VLM-generated caption
++            image_type: Optional image type for type-specific scoring
++
++        Returns:
++            Quality score between 0.0 and 1.0
++        """
++        if not caption or len(caption.strip()) == 0:
++            return 0.0
++
++        caption_lower = caption.lower()
++        words = caption_lower.split()
++        word_count = len(words)
++
++        # Dimension 1: Length adequacy (0.0-0.25)
++        if word_count < self.min_length // 5:  # Very short
++            length_score = 0.1
++        elif word_count > self.max_length // 3:  # Too long
++            length_score = 0.2
++        else:
++            length_score = 0.25
++
++        # Dimension 2: Medical terminology density (0.0-0.35)
++        anatomical_count = sum(1 for term in self.ANATOMICAL_TERMS if term in caption_lower)
++        clinical_count = sum(1 for term in self.CLINICAL_TERMS if term in caption_lower)
++        medical_density = (anatomical_count + clinical_count) / max(word_count, 1)
++        terminology_score = min(0.35, medical_density * 3.5)
++
++        # Dimension 3: Structural completeness (0.0-0.25)
++        has_anatomical = anatomical_count > 0
++        has_clinical = clinical_count > 0
++        completeness_score = 0.125 * has_anatomical + 0.125 * has_clinical
++
++        # Dimension 4: Specificity penalty (0.0-0.15)
++        generic_count = sum(1 for phrase in self.GENERIC_PHRASES if phrase in caption_lower)
++        specificity_score = max(0.0, 0.15 - (generic_count * self.penalty_generic))
++
++        total_score = length_score + terminology_score + completeness_score + specificity_score
++        return min(1.0, max(0.0, total_score))
++
++    def passes_threshold(self, caption: str, threshold: float = 0.4) -> bool:
++        """Check if caption meets minimum quality threshold."""
++        return self.score(caption) >= threshold
+
+
+ @dataclass

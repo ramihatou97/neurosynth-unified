@@ -65,7 +65,7 @@ async def get_missing_chunk_embeddings(conn) -> List[Dict[str, Any]]:
     rows = await conn.fetch("""
         SELECT id, content
         FROM chunks
-        WHERE embedding IS NULL
+        WHERE text_embedding IS NULL
         ORDER BY id
     """)
     return [dict(row) for row in rows]
@@ -287,13 +287,14 @@ async def backfill_chunk_embeddings(conn, dry_run: bool = False):
         try:
             embeddings = await generate_embeddings_voyage(texts)
 
-            # Update database
+            # Update database - format embedding as string for pgvector
             for chunk, embedding in zip(batch, embeddings):
+                emb_str = '[' + ','.join(str(x) for x in embedding.tolist()) + ']'
                 await conn.execute("""
                     UPDATE chunks
-                    SET embedding = $1
+                    SET text_embedding = $1::vector
                     WHERE id = $2
-                """, embedding.tobytes(), chunk['id'])
+                """, emb_str, chunk['id'])
 
             processed += len(batch)
             logger.info(f"Processed {processed}/{len(chunks)} chunks")
@@ -416,13 +417,14 @@ async def backfill_caption_embeddings(conn, dry_run: bool = False):
         try:
             embeddings = await generate_embeddings_voyage(captions)
 
-            # Update database
+            # Update database - format embedding as string for pgvector
             for img, embedding in zip(batch, embeddings):
+                emb_str = '[' + ','.join(str(x) for x in embedding.tolist()) + ']'
                 await conn.execute("""
                     UPDATE images
-                    SET caption_embedding = $1
+                    SET caption_embedding = $1::vector
                     WHERE id = $2
-                """, embedding.tobytes(), img['id'])
+                """, emb_str, img['id'])
 
             processed += len(batch)
             logger.info(f"Processed {processed}/{len(images)} caption embeddings")
@@ -448,7 +450,7 @@ async def check_status(conn):
     # Chunks
     total_chunks = await conn.fetchval("SELECT COUNT(*) FROM chunks")
     chunks_with_embeddings = await conn.fetchval(
-        "SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL"
+        "SELECT COUNT(*) FROM chunks WHERE text_embedding IS NOT NULL"
     )
     chunks_with_summaries = await conn.fetchval(
         "SELECT COUNT(*) FROM chunks WHERE summary IS NOT NULL AND summary != ''"

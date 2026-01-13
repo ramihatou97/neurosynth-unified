@@ -404,7 +404,7 @@ async def generate_synthesis(request: SynthesisRequest):
             include_verification=request.include_verification,
             include_figures=request.include_figures,
             include_web_research=request.include_web_research,  # V3: optional web research
-            # NOTE: gap_fill_strategy not yet implemented in EnhancedSynthesisEngine
+            gap_fill_strategy=request.gap_fill_strategy,  # V4: 14-stage gap filling
         )
         
         # Use longer timeout for web research
@@ -738,7 +738,7 @@ async def generate_synthesis_stream(request: SynthesisRequest):
                     include_verification=request.include_verification,
                     include_figures=request.include_figures,
                     include_web_research=request.include_web_research,  # V3: optional web research
-                    # NOTE: gap_fill_strategy not yet implemented in EnhancedSynthesisEngine
+                    gap_fill_strategy=request.gap_fill_strategy,  # V4: 14-stage gap filling
                 ),
                 timeout=timeout
             )

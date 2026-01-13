@@ -119,3 +119,7 @@ openai>=1.0.0
 
 # Library Scanner Dependencies
 thefuzz>=0.22.0
+
+# Enhanced Relation Extraction Dependencies
+negspacy>=1.0.3
+fastcoref>=2.1.6  # Optional: coreference resolution

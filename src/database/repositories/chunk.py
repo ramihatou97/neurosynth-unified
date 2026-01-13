@@ -159,6 +159,14 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             if isinstance(cuis, set):
                 cuis = list(cuis)
 
+            # Prepare summary embedding if available
+            summary_embedding = chunk.get('summary_embedding')
+            if summary_embedding is not None:
+                if isinstance(summary_embedding, np.ndarray):
+                    summary_embedding = DatabaseConnection._encode_vector(summary_embedding)
+                elif isinstance(summary_embedding, list):
+                    summary_embedding = DatabaseConnection._encode_vector(summary_embedding)
+
             records.append((
                 chunk['id'],
                 document_id,
@@ -172,6 +180,13 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 embedding,
                 cuis or [],
                 entities,
+                # Quality scores (v2.2)
+                chunk.get('readability_score', 0.0),
+                chunk.get('coherence_score', 0.0),
+                chunk.get('completeness_score', 0.0),
+                chunk.get('type_specific_score', 0.0),
+                chunk.get('summary'),
+                summary_embedding,
             ))
 
         async with self.db.transaction() as conn:
@@ -179,9 +194,12 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
                 INSERT INTO chunks (
                     id, document_id, content,
                     page_number, chunk_index, start_char, end_char,
-                    chunk_type, specialty, embedding, cuis, entities
+                    chunk_type, specialty, embedding, cuis, entities,
+                    readability_score, coherence_score, completeness_score,
+                    type_specific_score, summary, summary_embedding
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11, $12::jsonb
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::vector, $11, $12::jsonb,
+                    $13, $14, $15, $16, $17, $18::vector
                 )
             """, records)
         
@@ -210,7 +228,7 @@ class ChunkRepository(BaseRepository, VectorSearchMixin):
             offset: Skip results (for pagination)
         """
         columns = """
-            id, document_id, content, page_number, chunk_index,
+            id, document_id, content, summary, page_number, chunk_index,
             chunk_type, specialty, entities, cuis, metadata
         """
         if include_embedding:

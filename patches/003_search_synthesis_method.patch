@@ -1,0 +1,74 @@
+diff --git a/src/retrieval/search_service.py b/src/retrieval/search_service.py
+--- a/src/retrieval/search_service.py
++++ b/src/retrieval/search_service.py
+@@ -373,6 +373,73 @@ class SearchService:
+             rerank_time_ms=rerank_time
+         )
+
++    async def hybrid_search_for_synthesis(
++        self,
++        query: str,
++        top_k: int = 50,
++        filters: SearchFilters = None,
++        min_authority_tier: int = 3,
++        diversity_lambda: float = 0.7,
++    ) -> SearchResponse:
++        """
++        Synthesis-optimized hybrid search with multi-index fusion.
++
++        Combines results from:
++        1. Text embedding index (chunk content)
++        2. Summary embedding index (chunk summaries)
++        3. Caption embedding index (image captions)
++
++        Uses Reciprocal Rank Fusion (RRF) to merge ranked lists.
++
++        Args:
++            query: Search query text
++            top_k: Maximum results to return
++            filters: Search filters (document_ids, chunk_types, etc.)
++            min_authority_tier: Minimum source authority tier (1=highest, 3=default)
++            diversity_lambda: MMR diversity parameter (0.0-1.0)
++
++        Returns:
++            SearchResponse with synthesis-optimized results
++        """
++        # Use enhanced settings for synthesis quality
++        filters = filters or SearchFilters()
++
++        # Execute primary hybrid search with MMR diversity
++        response = await self.search(
++            query=query,
++            mode="hybrid",
++            top_k=top_k * 2,  # Over-fetch for better diversity selection
++            filters=filters,
++            include_images=True,
++            include_similar=False,
++            rerank=True,
++            mmr_lambda=diversity_lambda,
++        )
++
++        # Apply authority tier filtering
++        if min_authority_tier < 3:
++            filtered_results = []
++            for result in response.results:
++                # Authority tier: 1=Rhoton/Lawton, 2=Major textbook, 3=Standard
++                authority_tier = getattr(result, 'authority_tier', 3)
++                if authority_tier <= min_authority_tier:
++                    filtered_results.append(result)
++            response.results = filtered_results[:top_k]
++        else:
++            response.results = response.results[:top_k]
++
++        # Log synthesis search stats
++        logger.info(
++            f"Synthesis search: {len(response.results)} results, "
++            f"{sum(1 for r in response.results if r.images)} with images, "
++            f"diversity_lambda={diversity_lambda}"
++        )
++
++        return response
++
+     # =========================================================================
+     # FAISS Search Methods
+     # =========================================================================

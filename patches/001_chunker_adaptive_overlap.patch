@@ -1,0 +1,42 @@
+diff --git a/src/core/neuro_chunker.py b/src/core/neuro_chunker.py
+--- a/src/core/neuro_chunker.py
++++ b/src/core/neuro_chunker.py
+@@ -349,6 +349,7 @@ def _get_primary_entity(entities: List["ExtractedEntity"]) -> Optional["Extracte
+ @dataclass
+ class ChunkerConfig:
+     """Configuration for the semantic chunker (synthesis-optimized)."""
++    # Token limits
+     target_tokens: int = 600      # Soft limit - increased for richer context
+     max_tokens: int = 1000        # Hard limit - increased for complete thoughts
+     min_tokens: int = 150         # Minimum chunk size (words) - avoid fragments
+@@ -361,6 +362,30 @@ class ChunkerConfig:
+     pathology_target_tokens: int = 650    # Pathology needs clinical context
+     clinical_target_tokens: int = 600     # Clinical matches default
+
++    # Adaptive overlap by chunk type (sentences)
++    # Procedures need MORE overlap for step continuity
++    # Anatomy can use less overlap (more self-contained)
++    procedure_overlap_sentences: int = 3   # Extra overlap for surgical steps
++    anatomy_overlap_sentences: int = 1     # Minimal overlap for definitions
++    pathology_overlap_sentences: int = 2   # Standard overlap for clinical
++    clinical_overlap_sentences: int = 2    # Standard overlap
++
++    def get_overlap_for_type(self, chunk_type: str) -> int:
++        """Get adaptive overlap sentences based on chunk type.
++
++        Args:
++            chunk_type: One of 'procedure', 'anatomy', 'pathology', 'clinical', 'general'
++
++        Returns:
++            Number of overlap sentences for this chunk type
++        """
++        overlap_map = {
++            "procedure": self.procedure_overlap_sentences,
++            "anatomy": self.anatomy_overlap_sentences,
++            "pathology": self.pathology_overlap_sentences,
++            "clinical": self.clinical_overlap_sentences,
++        }
++        return overlap_map.get(chunk_type, self.overlap_sentences)
+
+ class NeuroSemanticChunker:
+     """
