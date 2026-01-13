@@ -1,11 +1,11 @@
 """
-16-Stage Neurosurgical Gap Detection Service
+20-Stage Neurosurgical Gap Detection Service
 =============================================
 
 Proactively detects knowledge gaps in synthesized content using
 comprehensive neurosurgical ontology and domain expertise.
 
-16 Detection Stages:
+20 Detection Stages:
 1. Subspecialty Classification
 2. Structural Analysis (canonical sections)
 3. Danger Zone Coverage
@@ -22,6 +22,10 @@ comprehensive neurosurgical ontology and domain expertise.
 14. CONCEPT-Specific Analysis
 15. Patient Context Analysis (P0 Enhancement)
 16. Temporal Validity Analysis (P0 Enhancement)
+17. Comorbidity Interaction Analysis (P1 Enhancement)
+18. Trajectory-Aware Danger Zones (P1 Enhancement)
+19. Negative Constraint Recognition (P2 Enhancement)
+20. Disease Stage Context (P2 Enhancement)
 
 Safety-Critical Gap Types (AUTO-CRITICAL):
 - DANGER_ZONE: Missing safety-critical anatomy
@@ -29,6 +33,9 @@ Safety-Critical Gap Types (AUTO-CRITICAL):
 - MEASUREMENT: Missing quantitative thresholds
 - SUPERSEDED_PRACTICE: Reference to contraindicated practice (P0)
 - PATIENT_CONTEXT_VIOLATION: Contraindication for patient demographics (P0)
+- COMORBIDITY_INTERACTION: Drug/condition interaction (P1)
+- TRAJECTORY_DANGER: Approach-specific danger zone (P1)
+- STAGE_MISMATCH: Stage-inappropriate recommendation (P2)
 """
 
 import logging
@@ -56,6 +63,25 @@ from .temporal_validity import (
     TemporalValidityChecker,
     SupersessionSeverity,
     TemporalValidityWarning,
+)
+from .comorbidity_interactions import (
+    ComorbidityInteractionAnalyzer,
+    InteractionSeverity,
+    InteractionWarning,
+)
+from .trajectory_danger_zones import (
+    TrajectoryDangerZoneAnalyzer,
+    SurgicalApproach,
+)
+from .negative_constraints import (
+    NegativeConstraintExtractor,
+    NegativeConstraint,
+    ConstraintSeverity,
+)
+from .disease_stage_context import (
+    DiseaseStageAnalyzer,
+    DiseaseStage,
+    StageContextWarning,
 )
 from .neurosurgical_ontology import (
     ARTERIAL_SEGMENTS,
@@ -138,6 +164,14 @@ class GapDetectionService:
         # P0 Enhancement: Patient Context and Temporal Validity
         self.patient_context_analyzer = PatientContextAnalyzer()
         self.temporal_validity_checker = TemporalValidityChecker()
+
+        # P1 Enhancement: Comorbidity Interactions and Trajectory Danger Zones
+        self.comorbidity_analyzer = ComorbidityInteractionAnalyzer()
+        self.trajectory_analyzer = TrajectoryDangerZoneAnalyzer()
+
+        # P2 Enhancement: Negative Constraints and Disease Stage Context
+        self.constraint_extractor = NegativeConstraintExtractor()
+        self.stage_analyzer = DiseaseStageAnalyzer()
 
     async def initialize(self) -> None:
         """Initialize the service and its components."""
@@ -290,6 +324,33 @@ class GapDetectionService:
         for g in stage16_gaps:
             g.detection_stage = 16
         gaps.extend(stage16_gaps)
+
+        # Stage 17: Comorbidity Interaction Analysis (P1 Enhancement)
+        stage17_gaps = self._comorbidity_interaction_analysis(
+            combined_content, patient_context
+        )
+        for g in stage17_gaps:
+            g.detection_stage = 17
+        gaps.extend(stage17_gaps)
+
+        # Stage 18: Trajectory-Aware Danger Zones (P1 Enhancement)
+        if template_type == TemplateType.PROCEDURAL:
+            stage18_gaps = self._trajectory_danger_zone_analysis(combined_content)
+            for g in stage18_gaps:
+                g.detection_stage = 18
+            gaps.extend(stage18_gaps)
+
+        # Stage 19: Negative Constraint Recognition (P2 Enhancement)
+        stage19_gaps = self._negative_constraint_analysis(combined_content)
+        for g in stage19_gaps:
+            g.detection_stage = 19
+        gaps.extend(stage19_gaps)
+
+        # Stage 20: Disease Stage Context (P2 Enhancement)
+        stage20_gaps = self._disease_stage_analysis(combined_content)
+        for g in stage20_gaps:
+            g.detection_stage = 20
+        gaps.extend(stage20_gaps)
 
         # User Demand Analysis (from Q&A history)
         if self.qa_repo:
@@ -1094,3 +1155,280 @@ class GapDetectionService:
                 return proc_key
 
         return None
+
+    def _comorbidity_interaction_analysis(
+        self,
+        content: str,
+        patient_context: Optional[PatientContext],
+    ) -> List[Gap]:
+        """
+        Stage 17: Comorbidity Interaction Analysis (P1 Enhancement)
+
+        Detects dangerous drug-drug, drug-condition, and cascade risk interactions.
+        """
+        gaps = []
+
+        # Extract drugs from content
+        drugs_in_content = self.comorbidity_analyzer.extract_drugs_from_content(content)
+
+        if not drugs_in_content:
+            return gaps
+
+        # Get patient conditions if available
+        patient_conditions = set()
+        additional_factors = set()
+
+        if patient_context:
+            patient_conditions = patient_context.known_conditions.copy()
+
+            # Add derived conditions
+            if patient_context.has_renal_impairment:
+                patient_conditions.add("renal_failure")
+                if patient_context.gfr and patient_context.gfr < 30:
+                    patient_conditions.add("gfr_below_30")
+            if patient_context.is_pregnant:
+                patient_conditions.add("pregnancy")
+            if patient_context.age_group == AgeGroup.ELDERLY:
+                additional_factors.add("elderly")
+
+        # Analyze interactions
+        warnings = self.comorbidity_analyzer.analyze(
+            patient_conditions=patient_conditions,
+            drugs_in_content=drugs_in_content,
+            additional_factors=additional_factors,
+        )
+
+        # Convert warnings to gaps
+        for warning in warnings:
+            if warning.severity == InteractionSeverity.CRITICAL:
+                priority = 100.0
+                safety_critical = True
+            elif warning.severity == InteractionSeverity.HIGH:
+                priority = 80.0
+                safety_critical = True
+            elif warning.severity == InteractionSeverity.MODERATE:
+                priority = 60.0
+                safety_critical = False
+            else:
+                priority = 40.0
+                safety_critical = False
+
+            gaps.append(Gap(
+                gap_type=GapType.DANGER_ZONE,
+                topic=f"Interaction: {warning.description[:50]}",
+                priority_score=priority,
+                current_coverage=f"Drugs/conditions in content: {', '.join(warning.involved_elements)}",
+                recommended_coverage=warning.recommendation,
+                justification={
+                    "reason": warning.description,
+                    "mechanism": warning.mechanism,
+                    "interaction_type": warning.interaction_type.value,
+                    "involved_elements": warning.involved_elements,
+                },
+                target_section="PHARMACOLOGY",
+                safety_critical=safety_critical,
+            ))
+
+        return gaps
+
+    def _trajectory_danger_zone_analysis(
+        self,
+        content: str,
+    ) -> List[Gap]:
+        """
+        Stage 18: Trajectory-Aware Danger Zones (P1 Enhancement)
+
+        Detects missing approach-specific danger zones based on surgical trajectory.
+        """
+        gaps = []
+
+        # Detect surgical approach from content
+        approaches = self.trajectory_analyzer.detect_approach(content)
+
+        if SurgicalApproach.UNKNOWN in approaches and len(approaches) == 1:
+            return gaps
+
+        # Analyze danger zone coverage
+        missing_zones = self.trajectory_analyzer.analyze_danger_zone_coverage(
+            content, approaches
+        )
+
+        for zone_info in missing_zones:
+            priority = 100.0 if zone_info["frequency"] == "common" else 85.0
+
+            gaps.append(Gap(
+                gap_type=GapType.DANGER_ZONE,
+                topic=f"Trajectory: {zone_info['structure'][:40]}",
+                priority_score=priority,
+                current_coverage=f"Approach: {zone_info['approach']}",
+                recommended_coverage=(
+                    f"Include danger zone: {zone_info['structure']}. "
+                    f"Risk: {zone_info['consequence']}. "
+                    f"Prevention: {zone_info['prevention_note']}"
+                ),
+                justification={
+                    "reason": f"Approach-specific danger zone not covered",
+                    "approach": zone_info["approach"],
+                    "consequence": zone_info["consequence"],
+                    "frequency": zone_info["frequency"],
+                    "bailout": zone_info.get("bailout_strategy", ""),
+                },
+                target_section="COMPLICATIONS",
+                safety_critical=True,
+            ))
+
+        return gaps
+
+    def _negative_constraint_analysis(
+        self,
+        content: str,
+    ) -> List[Gap]:
+        """
+        Stage 19: Negative Constraint Recognition (P2 Enhancement)
+
+        Extracts and surfaces negative constraints (contraindications, prohibitions).
+        """
+        gaps = []
+
+        # Extract constraints from content
+        constraints = self.constraint_extractor.extract_constraints(content)
+
+        # Check against known critical constraints
+        known_applicable = self.constraint_extractor.check_known_constraints(content)
+
+        # Surface absolute and strong constraints as informational gaps
+        # to ensure they are emphasized in output
+        for constraint in constraints:
+            if constraint.severity in (ConstraintSeverity.ABSOLUTE, ConstraintSeverity.STRONG):
+                gaps.append(Gap(
+                    gap_type=GapType.DECISION_POINT,
+                    topic=f"Constraint: {constraint.action[:40]}",
+                    priority_score=70.0 if constraint.severity == ConstraintSeverity.ABSOLUTE else 55.0,
+                    current_coverage=constraint.source_text[:200] if constraint.source_text else "",
+                    recommended_coverage=(
+                        f"CONSTRAINT DETECTED: {constraint.action}. "
+                        f"Reason: {constraint.reason}. Ensure this is prominently featured."
+                    ),
+                    justification={
+                        "reason": "Negative constraint should be emphasized",
+                        "constraint_type": constraint.constraint_type.value,
+                        "severity": constraint.severity.value,
+                        "conditions": constraint.conditions,
+                    },
+                    target_section="CONTRAINDICATIONS",
+                    safety_critical=constraint.severity == ConstraintSeverity.ABSOLUTE,
+                ))
+
+        # Check for known critical constraints that should be mentioned
+        content_lower = content.lower()
+        for known in known_applicable:
+            # Check if the constraint is already mentioned appropriately
+            constraint_mentioned = any(
+                term in content_lower
+                for term in ["contraindicated", "avoid", "do not", "never"]
+                if term in content_lower
+            )
+
+            if not constraint_mentioned:
+                gaps.append(Gap(
+                    gap_type=GapType.DANGER_ZONE,
+                    topic=f"Missing Constraint: {known.action[:40]}",
+                    priority_score=95.0,
+                    current_coverage="Known critical constraint not mentioned",
+                    recommended_coverage=(
+                        f"CRITICAL: {known.action} - {known.reason}. "
+                        f"Source: {known.source_text}"
+                    ),
+                    justification={
+                        "reason": "Known critical constraint must be included",
+                        "constraint_id": known.constraint_id,
+                        "conditions": known.conditions,
+                    },
+                    target_section="CONTRAINDICATIONS",
+                    safety_critical=True,
+                ))
+
+        return gaps
+
+    def _disease_stage_analysis(
+        self,
+        content: str,
+    ) -> List[Gap]:
+        """
+        Stage 20: Disease Stage Context (P2 Enhancement)
+
+        Validates that recommendations are appropriate for the detected disease stage.
+        """
+        gaps = []
+
+        # Detect diseases in content
+        diseases = self.stage_analyzer.detect_disease(content)
+        if not diseases:
+            return gaps
+
+        # Detect stage
+        stages = self.stage_analyzer.detect_stage(content)
+        if stages[0][0] == DiseaseStage.UNKNOWN:
+            return gaps
+
+        detected_stage = stages[0][0]
+
+        # Check for stage-inappropriate recommendations
+        for disease in diseases:
+            warnings = self.stage_analyzer.check_stage_appropriateness(content, disease)
+
+            for warning in warnings:
+                severity_map = {"CRITICAL": 95.0, "HIGH": 75.0, "MEDIUM": 55.0, "LOW": 35.0}
+                priority = severity_map.get(warning.severity, 55.0)
+
+                gaps.append(Gap(
+                    gap_type=GapType.TEMPORAL,
+                    topic=f"Stage Mismatch: {warning.intervention[:40]}",
+                    priority_score=priority,
+                    current_coverage=f"Detected stage: {warning.detected_stage.value}",
+                    recommended_coverage=(
+                        f"'{warning.intervention}' may be inappropriate for {warning.detected_stage.value} phase. "
+                        f"{warning.recommendation}"
+                    ),
+                    justification={
+                        "reason": warning.issue,
+                        "detected_stage": warning.detected_stage.value,
+                        "disease": disease,
+                    },
+                    target_section="MANAGEMENT",
+                    safety_critical=warning.severity == "CRITICAL",
+                ))
+
+        # Also generate informational gaps about stage-specific management
+        for disease in diseases:
+            profile = self.stage_analyzer.get_stage_profile(disease, detected_stage)
+            if profile:
+                # Check if key interventions are mentioned
+                content_lower = content.lower()
+                for intervention in profile.key_interventions[:3]:  # Top 3
+                    intervention_terms = intervention.lower().split()
+                    mentioned = any(
+                        term in content_lower
+                        for term in intervention_terms
+                        if len(term) > 3
+                    )
+
+                    if not mentioned:
+                        gaps.append(Gap(
+                            gap_type=GapType.STRUCTURAL,
+                            topic=f"Stage-specific: {intervention[:40]}",
+                            priority_score=50.0,
+                            current_coverage=f"Stage: {detected_stage.value} {disease}",
+                            recommended_coverage=(
+                                f"Consider including stage-specific intervention: {intervention} "
+                                f"(appropriate for {detected_stage.value} {disease})"
+                            ),
+                            justification={
+                                "reason": "Stage-specific key intervention not mentioned",
+                                "stage": detected_stage.value,
+                                "paradigm": profile.typical_paradigm.value,
+                            },
+                            target_section="MANAGEMENT",
+                        ))
+
+        return gaps
