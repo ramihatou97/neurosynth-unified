@@ -1,11 +1,11 @@
 """
-14-Stage Neurosurgical Gap Detection Service
+16-Stage Neurosurgical Gap Detection Service
 =============================================
 
 Proactively detects knowledge gaps in synthesized content using
 comprehensive neurosurgical ontology and domain expertise.
 
-14 Detection Stages:
+16 Detection Stages:
 1. Subspecialty Classification
 2. Structural Analysis (canonical sections)
 3. Danger Zone Coverage
@@ -20,11 +20,15 @@ comprehensive neurosurgical ontology and domain expertise.
 12. DISORDER-Specific Analysis
 13. ANATOMY-Specific Analysis
 14. CONCEPT-Specific Analysis
+15. Patient Context Analysis (P0 Enhancement)
+16. Temporal Validity Analysis (P0 Enhancement)
 
 Safety-Critical Gap Types (AUTO-CRITICAL):
 - DANGER_ZONE: Missing safety-critical anatomy
 - BAILOUT: Missing complication management
 - MEASUREMENT: Missing quantitative thresholds
+- SUPERSEDED_PRACTICE: Reference to contraindicated practice (P0)
+- PATIENT_CONTEXT_VIOLATION: Contraindication for patient demographics (P0)
 """
 
 import logging
@@ -42,6 +46,16 @@ from .gap_models import (
     GapType,
     SAFETY_CRITICAL_TYPES,
     TemplateType,
+)
+from .patient_context import (
+    PatientContext,
+    PatientContextAnalyzer,
+    AgeGroup,
+)
+from .temporal_validity import (
+    TemporalValidityChecker,
+    SupersessionSeverity,
+    TemporalValidityWarning,
 )
 from .neurosurgical_ontology import (
     ARTERIAL_SEGMENTS,
@@ -121,6 +135,10 @@ class GapDetectionService:
         self.subspecialty_classifier = SubspecialtyClassifier(embedding_service)
         self._is_initialized = False
 
+        # P0 Enhancement: Patient Context and Temporal Validity
+        self.patient_context_analyzer = PatientContextAnalyzer()
+        self.temporal_validity_checker = TemporalValidityChecker()
+
     async def initialize(self) -> None:
         """Initialize the service and its components."""
         if self._is_initialized:
@@ -138,15 +156,17 @@ class GapDetectionService:
         template_type: TemplateType,
         search_results: List[SearchResult],
         images: Optional[List[Dict]] = None,
+        patient_context: Optional[PatientContext] = None,
     ) -> GapReport:
         """
-        Run all 14 detection stages and return comprehensive gap report.
+        Run all 16 detection stages and return comprehensive gap report.
 
         Args:
             topic: The synthesis topic
             template_type: Type of template (PROCEDURAL, DISORDER, etc.)
             search_results: Search results from corpus
             images: Available images for the topic
+            patient_context: Optional patient demographics for context-aware detection
 
         Returns:
             GapReport with all detected gaps and metadata
@@ -256,6 +276,20 @@ class GapDetectionService:
             for g in stage14_gaps:
                 g.detection_stage = 14
             gaps.extend(stage14_gaps)
+
+        # Stage 15: Patient Context Analysis (P0 Enhancement)
+        stage15_gaps = self._patient_context_analysis(
+            combined_content, patient_context, subspecialty
+        )
+        for g in stage15_gaps:
+            g.detection_stage = 15
+        gaps.extend(stage15_gaps)
+
+        # Stage 16: Temporal Validity Analysis (P0 Enhancement)
+        stage16_gaps = self._temporal_validity_analysis(combined_content, subspecialty)
+        for g in stage16_gaps:
+            g.detection_stage = 16
+        gaps.extend(stage16_gaps)
 
         # User Demand Analysis (from Q&A history)
         if self.qa_repo:
@@ -769,6 +803,216 @@ class GapDetectionService:
                     },
                     target_section=section.upper(),
                 ))
+
+        return gaps
+
+    def _patient_context_analysis(
+        self,
+        content: str,
+        patient_context: Optional[PatientContext],
+        subspecialty: str,
+    ) -> List[Gap]:
+        """
+        Stage 15: Patient Context Analysis (P0 Enhancement)
+
+        Detects gaps related to patient demographics:
+        - Pediatric thresholds not mentioned when applicable
+        - Drug contraindications for patient conditions
+        - Weight-based dosing requirements for pediatrics
+        - Pregnancy/renal considerations
+        """
+        gaps = []
+
+        if patient_context is None:
+            return gaps
+
+        content_lower = content.lower()
+
+        # Get measurement profile for patient's age group
+        measurement_profile = self.patient_context_analyzer.get_measurement_profile(
+            patient_context
+        )
+
+        # Check for pediatric-specific threshold gaps
+        if patient_context.is_pediatric:
+            age_group = patient_context.age_group
+
+            # Check if pediatric ICP threshold is mentioned
+            if "icp" in content_lower or "intracranial pressure" in content_lower:
+                pediatric_threshold = measurement_profile.get("icp", {}).get(
+                    "treatment_threshold", {}
+                ).get("value")
+
+                if pediatric_threshold:
+                    # Check if the correct pediatric threshold is mentioned
+                    threshold_str = str(pediatric_threshold)
+                    if threshold_str not in content:
+                        gaps.append(Gap(
+                            gap_type=GapType.MEASUREMENT,
+                            topic=f"Pediatric ICP threshold ({age_group.value})",
+                            priority_score=100.0,  # Auto-critical
+                            current_coverage="Adult ICP guidelines may be referenced",
+                            recommended_coverage=(
+                                f"For {age_group.value} patients, ICP treatment threshold is "
+                                f"{pediatric_threshold} mmHg (vs adult 22 mmHg). "
+                                f"Source: {measurement_profile.get('source', 'Pediatric TBI Guidelines')}"
+                            ),
+                            justification={
+                                "reason": "Pediatric patient requires age-appropriate ICP thresholds",
+                                "patient_age_group": age_group.value,
+                                "correct_threshold": pediatric_threshold,
+                                "adult_threshold": 22,
+                            },
+                            target_section="MANAGEMENT",
+                            safety_critical=True,
+                        ))
+
+            # Check for weight-based dosing mentions
+            drug_keywords = ["mannitol", "levetiracetam", "phenytoin", "dexamethasone"]
+            drugs_mentioned = [d for d in drug_keywords if d in content_lower]
+
+            if drugs_mentioned and patient_context.weight_kg:
+                # Check if weight-based dosing is mentioned
+                weight_pattern = r"\d+\.?\d*\s*mg/kg|\d+\.?\d*\s*g/kg"
+                has_weight_dosing = re.search(weight_pattern, content_lower)
+
+                if not has_weight_dosing:
+                    gaps.append(Gap(
+                        gap_type=GapType.MEASUREMENT,
+                        topic="Weight-based pediatric dosing",
+                        priority_score=85.0,
+                        current_coverage=f"Drugs mentioned: {', '.join(drugs_mentioned)}",
+                        recommended_coverage=(
+                            f"Pediatric patient (weight: {patient_context.weight_kg}kg) requires "
+                            f"weight-based dosing. Include mg/kg calculations for: {', '.join(drugs_mentioned)}"
+                        ),
+                        justification={
+                            "reason": "Pediatric patients require weight-based drug dosing",
+                            "patient_weight_kg": patient_context.weight_kg,
+                            "drugs_needing_adjustment": drugs_mentioned,
+                        },
+                        target_section="PHARMACOLOGY",
+                        safety_critical=True,
+                    ))
+
+        # Check for pregnancy-related contraindications
+        if patient_context.is_pregnant:
+            pregnancy_contraindicated = ["valproic acid", "carbamazepine", "phenytoin", "warfarin"]
+            for drug in pregnancy_contraindicated:
+                if drug in content_lower:
+                    # Check if contraindication is mentioned
+                    contraindication_mentioned = any(
+                        phrase in content_lower
+                        for phrase in ["contraindicated in pregnancy", "avoid in pregnancy",
+                                       "pregnancy category x", "teratogenic"]
+                    )
+                    if not contraindication_mentioned:
+                        gaps.append(Gap(
+                            gap_type=GapType.DANGER_ZONE,
+                            topic=f"{drug.title()} pregnancy contraindication",
+                            priority_score=100.0,  # Auto-critical
+                            current_coverage=f"{drug.title()} mentioned without pregnancy warning",
+                            recommended_coverage=(
+                                f"WARNING: {drug.title()} is contraindicated in pregnancy. "
+                                f"Patient is pregnant. Consider alternatives such as levetiracetam."
+                            ),
+                            justification={
+                                "reason": f"{drug.title()} is teratogenic and contraindicated in pregnancy",
+                                "patient_pregnancy_status": patient_context.pregnancy_status.value,
+                            },
+                            target_section="PHARMACOLOGY",
+                            safety_critical=True,
+                        ))
+
+        # Check for renal impairment contraindications
+        if patient_context.has_renal_impairment:
+            if "mannitol" in content_lower:
+                # Check if renal contraindication is mentioned
+                renal_warning_mentioned = any(
+                    phrase in content_lower
+                    for phrase in ["renal failure", "renal impairment", "contraindicated",
+                                   "avoid in renal", "gfr"]
+                )
+                if not renal_warning_mentioned:
+                    gaps.append(Gap(
+                        gap_type=GapType.DANGER_ZONE,
+                        topic="Mannitol renal contraindication",
+                        priority_score=100.0,  # Auto-critical
+                        current_coverage="Mannitol mentioned without renal warning",
+                        recommended_coverage=(
+                            f"WARNING: Mannitol is contraindicated with GFR < 30. "
+                            f"Patient GFR: {patient_context.gfr or 'unknown'}. "
+                            f"Consider hypertonic saline as alternative."
+                        ),
+                        justification={
+                            "reason": "Mannitol contraindicated in renal impairment",
+                            "patient_gfr": patient_context.gfr,
+                            "patient_renal_status": patient_context.renal_function.value,
+                        },
+                        target_section="PHARMACOLOGY",
+                        safety_critical=True,
+                    ))
+
+        return gaps
+
+    def _temporal_validity_analysis(
+        self,
+        content: str,
+        subspecialty: str,
+    ) -> List[Gap]:
+        """
+        Stage 16: Temporal Validity Analysis (P0 Enhancement)
+
+        Detects references to superseded medical practices:
+        - NASCIS protocol (now contraindicated)
+        - Steroids in TBI (CRASH trial)
+        - Routine hyperventilation (causes ischemia)
+        - Outdated BTF guidelines
+        """
+        gaps = []
+
+        # Check content for superseded practices
+        specialty_filter = [subspecialty] if subspecialty else None
+        warnings = self.temporal_validity_checker.check_content(
+            content, specialty_filter=specialty_filter
+        )
+
+        for warning in warnings:
+            # Map supersession severity to gap priority
+            if warning.severity == SupersessionSeverity.CRITICAL:
+                priority_score = 100.0
+                safety_critical = True
+                gap_type = GapType.DANGER_ZONE  # Treat as danger zone
+            elif warning.severity == SupersessionSeverity.HIGH:
+                priority_score = 80.0
+                safety_critical = False
+                gap_type = GapType.TEMPORAL
+            elif warning.severity == SupersessionSeverity.MEDIUM:
+                priority_score = 55.0
+                safety_critical = False
+                gap_type = GapType.TEMPORAL
+            else:
+                priority_score = 35.0
+                safety_critical = False
+                gap_type = GapType.TEMPORAL
+
+            gaps.append(Gap(
+                gap_type=gap_type,
+                topic=f"Superseded: {warning.detected_text[:50]}",
+                priority_score=priority_score,
+                current_coverage=warning.original_practice,
+                recommended_coverage=warning.current_recommendation,
+                justification={
+                    "reason": f"Reference to superseded practice (superseded {warning.supersession_year})",
+                    "supersession_type": warning.supersession_type.value,
+                    "evidence": warning.evidence,
+                    "detected_text": warning.detected_text,
+                    "context": warning.location_hint,
+                },
+                target_section="EVIDENCE",
+                external_query=f"current guidelines {warning.detected_text[:30]}",
+                safety_critical=safety_critical,
+            ))
 
         return gaps
 
